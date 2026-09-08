@@ -136,7 +136,11 @@ def build_mpv_glsl_cmd(
     target_h: int,
     fps_str: str,
 ) -> list[str]:
-    """Plain mpv, no user config, absolute shader paths, locked 2× canvas."""
+    """Plain mpv encode: shaders run in vf=gpu (offscreen). Do not set --vo=gpu*.
+
+    Encoding mode uses vo=lavc. Passing --vo=gpu-next / --force-window makes mpv
+    try to open a display window and fail with "Error opening/initializing the VO window".
+    """
     cmd = [
         str(mpv),
         "--no-config",
@@ -148,15 +152,11 @@ def build_mpv_glsl_cmd(
         "--no-sub",
         "--osc=no",
         "--osd-level=0",
-        "--vo=gpu-next",
-        "--gpu-api=auto",
-        "--hwdec=auto-copy",
-        "--force-window=immediate",
-        "--geometry=320x180",
+        "--vo=lavc",
+        "--hwdec=no",
         "--untimed",
         "--framedrop=no",
         f"--glsl-shaders={glsl_shaders_arg(shaders)}",
-        # Current mpv: size lock is vf=gpu (vo_gpu as filter). vf=gpu-next is not a filter.
         f"--vf=gpu=w={target_w}:h={target_h}",
         f"--o={tmp_mkv}",
         "--of=matroska",
@@ -242,35 +242,7 @@ def render_glsl(
     if cancel_event is not None and cancel_event.is_set():
         raise BackendError("cancelled")
     if rc != 0 or not tmp_mkv.is_file() or tmp_mkv.stat().st_size == 0:
-        tail = "\n".join(err[-30:]).strip()
-        # Fallback: some mpv builds expose vf=gpu rather than vf=gpu-next.
-        if rc != 0 and any(
-            s in tail.lower()
-            for s in ("isn't supported", "doesn't exist", "option vf", "option not found")
-        ):
-            if log:
-                log("mpv vf=gpu not accepted; retrying --vf=gpu-next=w:h")
-            cmd2 = [
-                a
-                if not a.startswith("--vf=gpu=")
-                else f"--vf=gpu-next=w={target_w}:h={target_h}"
-                for a in cmd
-            ]
-            if log:
-                log(f"mpv: {format_cmd(cmd2)}")
-            rc, _out, err = run_logged(
-                cmd2,
-                cancel_event=cancel_event,
-                on_stderr=on_err,
-                on_stdout=on_err,
-                hide_window=False,
-            )
-            cmd = cmd2
-            if cancel_event is not None and cancel_event.is_set():
-                raise BackendError("cancelled")
-            if rc == 0 and tmp_mkv.is_file() and tmp_mkv.stat().st_size > 0:
-                return cmd, shaders
-            tail = "\n".join(err[-30:]).strip()
+        tail = "\n".join((_out + err)[-40:]).strip()
         raise BackendError(
             f"mpv render failed for {spec.token} (exit {rc}). "
             f"output={tmp_mkv} "

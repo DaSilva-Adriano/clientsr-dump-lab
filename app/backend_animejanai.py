@@ -91,10 +91,8 @@ def build_animejanai_cmd(
         "--no-sub",
         "--osc=no",
         "--osd-level=0",
-        "--vo=gpu-next",
-        "--gpu-api=auto",
-        "--force-window=immediate",
-        "--geometry=320x180",
+        # portable_config sets vo=gpu-next; encoding must use lavc or the VO window fails.
+        "--vo=lavc",
         "--untimed",
         "--framedrop=no",
         "--save-position-on-quit=no",
@@ -166,37 +164,7 @@ def render_animejanai(
     if cancel_event is not None and cancel_event.is_set():
         raise AnimeJaNaiError("cancelled")
     if rc != 0 or not tmp_mkv.is_file() or tmp_mkv.stat().st_size == 0:
-        tail = "\n".join(err_lines[-40:]).strip()
-        if rc != 0 and any(
-            s in tail.lower()
-            for s in ("isn't supported", "doesn't exist", "option vf", "option not found")
-        ):
-            if log:
-                log("AnimeJaNai vf-add=gpu not accepted; retrying vf-add=gpu-next=w:h")
-            cmd2 = [
-                (
-                    a
-                    if not a.startswith("--vf-add=gpu=")
-                    else f"--vf-add=gpu-next=w={target_w}:h={target_h}"
-                )
-                for a in cmd
-            ]
-            if log:
-                log(f"mpv: {format_cmd(cmd2)}")
-            rc, _out, err_lines = run_logged(
-                cmd2,
-                cancel_event=cancel_event,
-                on_stderr=on_err,
-                on_stdout=on_err,
-                hide_window=False,
-                cwd=binary.parent,
-            )
-            cmd = cmd2
-            if cancel_event is not None and cancel_event.is_set():
-                raise AnimeJaNaiError("cancelled")
-            if rc == 0 and tmp_mkv.is_file() and tmp_mkv.stat().st_size > 0:
-                return cmd
-            tail = "\n".join(err_lines[-40:]).strip()
+        tail = "\n".join((_out + err_lines)[-40:]).strip()
         raise AnimeJaNaiError(
             f"AnimeJaNai render failed (exit {rc}). binary={binary} "
             + (tail[-800:] if tail else "no stderr — is aji.dll / TensorRT runtime present?")
