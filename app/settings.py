@@ -136,28 +136,29 @@ def save_config(cfg: AppConfig) -> None:
 
 
 def _usable_animejanai_binary(path: Path) -> bool:
-    """Reject tiny launch stubs (e.g. mpvnet.com copied to mpv.exe) that re-exec themselves."""
+    """CLI mpv.exe only. mpvnet is a GUI and will not exit in --o= encode mode."""
     try:
         if not path.is_file():
             return False
     except OSError:
         return False
-    if path.name.lower() == "mpv.exe" and path.stat().st_size < 1_000_000:
+    name = path.name.lower()
+    if name in {"mpvnet.exe", "mpvnet.com"}:
         return False
-    return True
+    if name == "mpv.exe" and path.stat().st_size < 1_000_000:
+        return False
+    return name == "mpv.exe"
 
 
 def resolve_animejanai_binary(configured: Path) -> Path | None:
-    """Prefer the console host (mpvnet.com), then mpvnet.exe, then a real mpv.exe."""
+    """Prefer the bundle's real mpv.exe (CLI). Never mpvnet — it does not encode/exit."""
     if configured.suffix.lower() in {".exe", ".com"}:
         folder = configured.parent
     else:
         folder = configured
     candidates = [
-        configured,
-        folder / "mpvnet.com",
-        folder / "mpvnet.exe",
         folder / "mpv.exe",
+        configured,
     ]
     seen: set[str] = set()
     for cand in candidates:
