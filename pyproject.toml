@@ -1,0 +1,24 @@
+[project]
+name = "clientsr-dump-lab"
+version = "1.0.0"
+description = "Batch 2× dumps of real-time client upscalers (FSRCNNX, Anime4K, AnimeJaNai) for thesis comparison."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "customtkinter>=5.2.2",
+    "PyYAML>=6.0.1",
+    "tkinterdnd2>=0.4.2",
+]
+
+[project.scripts]
+clientsr-dump-lab = "app.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.uv]
+package = true
