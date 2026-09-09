@@ -157,6 +157,14 @@ Upstream: [bloc97/Anime4K](https://github.com/bloc97/Anime4K). If a filename on 
 - Status bar: ffmpeg / mpv / AnimeJaNai / GPU (`nvidia-smi`).
 - FPS other than 24/25/30/50/60 (plus 23.976 / 29.97 / 59.94) warns but still allows.
 
+## Play live
+
+Select **one** queue file (or the first playable among a multi-selection), pick a **Live model** in the combobox (every catalog token, including Group B even if the dump switch is off), then **Play live**. That opens a visible mpv window using the **same binary and shaders as the dump** — GLSL models via plain `mpv.exe --glsl-shaders=`, AnimeJaNai via the bundle `mpv.exe --config-dir=`. Audio stays on. No MP4, sidecar, or manifest row is written.
+
+Stop with **Stop live** or by closing the mpv window. A dump batch and live playback cannot share the GPU: Play live is refused while dumps run; Start dumps offers to stop a live window first.
+
+In mpv, **Shift+I** opens the profiler (frame times / shader cost).
+
 ## Project layout
 
 ```
@@ -174,6 +182,7 @@ clientsr-dump-lab/
     jobs.py
     backend_mpv.py
     backend_animejanai.py
+    backend_live.py
     encode.py
     manifest.py
     winproc.py

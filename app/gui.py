@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import queue
 import re
+import subprocess
 import threading
 import traceback
 from pathlib import Path
@@ -15,7 +16,13 @@ import customtkinter as ctk
 
 from app import APP_NAME
 from app.backend_animejanai import ENGINE_NOTE
-from app.catalog import GROUP_A, GROUP_B, ModelSpec, selected_models
+from app.backend_live import (
+    LiveError,
+    model_ready_live,
+    prepare_live,
+    start_live_process,
+)
+from app.catalog import GROUP_A, GROUP_B, MODELS, MODELS_BY_TOKEN, ModelSpec, selected_models
 from app.jobs import (
     BatchRunner,
     DumpJob,
@@ -47,6 +54,7 @@ from app.settings import (
     save_config,
     tmp_dir,
 )
+from app.winproc import format_cmd, kill_tree
 
 COLS = ("file", "wxh", "fps", "duration", "cls", "content", "status")
 COL_HEAD = {
@@ -69,6 +77,12 @@ COL_W = {
 }
 
 FORCE_VALUES = ("Off (auto)", "720p", "2160p")
+
+
+def _live_model_labels() -> list[str]:
+    return [f"{m.ui_label}  [{m.token}]" for m in MODELS]
+
+
 X265_PRESETS = (
     "ultrafast",
     "superfast",
@@ -342,6 +356,9 @@ class DumpLabApp:
         self.group_b_vars: dict[str, ctk.BooleanVar] = {}
         self.model_helpers: dict[str, ctk.CTkLabel] = {}
         self.model_checks: dict[str, ctk.CTkCheckBox] = {}
+        self.live_proc: subprocess.Popen[str] | None = None
+        self.live_token: str = ""
+        self._live_ani_noted = False
         self._uiq: queue.Queue = queue.Queue()
 
         root.title(APP_NAME)
@@ -572,14 +589,25 @@ class DumpLabApp:
         frame.pack(fill="x", padx=10, pady=4)
         var = ctk.BooleanVar(value=spec.default_enabled)
         store[spec.token] = var
+        top = ctk.CTkFrame(frame, fg_color="transparent")
+        top.pack(fill="x")
         chk = ctk.CTkCheckBox(
-            frame,
+            top,
             text=spec.ui_label,
             variable=var,
             command=self._refresh_matrix,
             font=ctk.CTkFont(size=13, weight="bold"),
         )
-        chk.pack(anchor="w")
+        chk.pack(side="left", anchor="w")
+        ctk.CTkButton(
+            top,
+            text="Play",
+            width=56,
+            height=24,
+            fg_color="#333333",
+            hover_color="#444444",
+            command=lambda t=spec.token: self._play_live_from_row(t),
+        ).pack(side="right", padx=4)
         self.model_checks[spec.token] = chk
         meta = ctk.CTkLabel(
             frame,
@@ -651,6 +679,39 @@ class DumpLabApp:
             state="disabled",
         )
         self.cancel_btn.pack(side="left", padx=4)
+
+        live_row = ctk.CTkFrame(bar, fg_color="transparent")
+        live_row.grid(row=2, column=0, columnspan=5, sticky="ew", padx=12, pady=(0, 2))
+        ctk.CTkLabel(live_row, text="Live model").pack(side="left", padx=(0, 8))
+        labels = _live_model_labels()
+        self.live_combo = ctk.CTkComboBox(live_row, values=labels, width=460)
+        self.live_combo.set(labels[0] if labels else "")
+        self.live_combo.pack(side="left", padx=4)
+        self.play_live_btn = ctk.CTkButton(
+            live_row,
+            text="▶ Play live",
+            width=140,
+            height=36,
+            command=self._play_live,
+        )
+        self.play_live_btn.pack(side="left", padx=4)
+        self.stop_live_btn = ctk.CTkButton(
+            live_row,
+            text="Stop live",
+            width=110,
+            height=36,
+            fg_color="#444444",
+            hover_color="#555555",
+            command=self._stop_live,
+            state="disabled",
+        )
+        self.stop_live_btn.pack(side="left", padx=4)
+        ctk.CTkLabel(
+            bar,
+            text="Same mpv + shaders as the dump. Windowed playback, no file written.",
+            text_color="#8a8a8a",
+            font=ctk.CTkFont(size=12),
+        ).grid(row=3, column=0, columnspan=5, sticky="w", padx=12, pady=(0, 8))
 
     def _build_progress(self, root) -> None:
         wrap = ctk.CTkFrame(root, fg_color="transparent")
@@ -967,6 +1028,14 @@ class DumpLabApp:
     def _start(self) -> None:
         if self.running:
             return
+        if self._live_is_running():
+            if not messagebox.askokcancel(
+                APP_NAME,
+                "Live mpv is still open. Dumps already need the GPU.\n\n"
+                "Stop live and start dumps?",
+            ):
+                return
+            self._stop_live()
         self._persist_output()
         items = self._queue_list()
         models = self._current_models()
@@ -1045,6 +1114,7 @@ class DumpLabApp:
         self.cancel_event = threading.Event()
         self.start_btn.configure(state="disabled")
         self.cancel_btn.configure(state="normal")
+        self._sync_live_buttons()
         self.prog.set(0)
         self.prog_label.configure(text="Starting…")
 
@@ -1096,7 +1166,9 @@ class DumpLabApp:
         self.runner = None
         self.start_btn.configure(state="normal")
         self.cancel_btn.configure(state="disabled")
-        self.prog_label.configure(text="Idle")
+        self._sync_live_buttons()
+        if not self._live_is_running():
+            self.prog_label.configure(text="Idle")
 
     def _cancel(self) -> None:
         if not self.running:
@@ -1154,8 +1226,212 @@ class DumpLabApp:
             if not messagebox.askokcancel(APP_NAME, "A dump is running. Cancel and quit?"):
                 return
             self._cancel()
+        if self._live_is_running():
+            self._stop_live()
         self._persist_output()
         self.root.destroy()
+
+    # ------------------------------------------------------------------ live
+    def _live_spec_from_combo(self) -> ModelSpec | None:
+        val = (self.live_combo.get() or "").strip()
+        for spec in MODELS:
+            if val.endswith(f"[{spec.token}]") or val == spec.token:
+                return spec
+        return MODELS_BY_TOKEN.get(val)
+
+    def _set_live_combo_token(self, token: str) -> None:
+        for label in _live_model_labels():
+            if label.endswith(f"[{token}]"):
+                self.live_combo.set(label)
+                return
+
+    def _live_is_running(self) -> bool:
+        proc = self.live_proc
+        return proc is not None and proc.poll() is None
+
+    def _sync_live_buttons(self) -> None:
+        playing = self._live_is_running()
+        if getattr(self, "stop_live_btn", None) is not None:
+            self.stop_live_btn.configure(state="normal" if playing else "disabled")
+        if getattr(self, "play_live_btn", None) is not None:
+            self.play_live_btn.configure(
+                state="disabled" if self.running else "normal"
+            )
+
+    def _playable_item(self, item: QueueItem | None) -> bool:
+        if item is None:
+            return False
+        if item.width <= 0 or item.status == "probing":
+            return False
+        if item.height_class == CLASS_UNSUPPORTED:
+            return False
+        if not item.target_w or not item.target_h:
+            return False
+        return True
+
+    def _live_source_item(self) -> QueueItem | None:
+        iids = self._selected_iids()
+        playable: list[QueueItem] = []
+        for iid in iids:
+            item = self.items.get(iid)
+            if item is not None and self._playable_item(item):
+                playable.append(item)
+        if not playable:
+            return None
+        if len(iids) > 1:
+            self.log(f"live: several files selected — using {playable[0].path.name}")
+        return playable[0]
+
+    def _play_live_from_row(self, token: str) -> None:
+        self._set_live_combo_token(token)
+        self._play_live()
+
+    def _play_live(self) -> None:
+        if self.running:
+            messagebox.showerror(
+                APP_NAME,
+                "A dump batch is running. Dumps already own the GPU.",
+            )
+            return
+        iids = self._selected_iids()
+        if not iids:
+            messagebox.showerror(
+                APP_NAME,
+                "Select one queue file to play live (not unsupported).",
+            )
+            return
+        item = self._live_source_item()
+        if item is None:
+            first = self.items.get(iids[0])
+            if first is not None and first.status == "probing":
+                messagebox.showerror(
+                    APP_NAME,
+                    "File is still probing. Wait for WxH before Play live.",
+                )
+                return
+            if first is not None and first.width <= 0:
+                messagebox.showerror(
+                    APP_NAME,
+                    f"Cannot play live: {first.status or 'no WxH yet'}.",
+                )
+                return
+            messagebox.showerror(
+                APP_NAME,
+                "Selected file is unsupported for 2× "
+                "(360p or 1080p, or Force 2× target).",
+            )
+            return
+        spec = self._live_spec_from_combo()
+        if spec is None:
+            messagebox.showerror(APP_NAME, "Pick a Live model in the combobox.")
+            return
+        err = model_ready_live(
+            spec,
+            self.cfg.mpv_path(),
+            self.cfg.shaders_path(),
+            self.cfg.animejanai_path(),
+        )
+        if err:
+            messagebox.showerror(APP_NAME, err)
+            return
+        if self._live_is_running():
+            self.log("live: stopping previous mpv")
+            self._stop_live()
+        try:
+            launch = prepare_live(
+                spec,
+                item.path,
+                int(item.target_w or 0),
+                int(item.target_h or 0),
+                mpv=self.cfg.mpv_path(),
+                shaders_dir=self.cfg.shaders_path(),
+                animejanai_configured=self.cfg.animejanai_path(),
+            )
+        except LiveError as exc:
+            messagebox.showerror(APP_NAME, str(exc))
+            return
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"Cannot start live: {exc}")
+            return
+
+        for note in launch.notes:
+            self.log(note)
+        if launch.engine_note and not self._live_ani_noted:
+            self.log(ENGINE_NOTE)
+            self._live_ani_noted = True
+            if not self.cfg.animejanai_engine_note:
+                self.cfg.animejanai_engine_note = True
+                save_config(self.cfg)
+                self.ani_note.configure(
+                    text="TensorRT engine builds once and can take several minutes. "
+                    "This host has already launched AnimeJaNai at least once this install."
+                )
+        self.log(f"mpv live: {format_cmd(launch.cmd)}")
+
+        def on_live_line(line: str) -> None:
+            low = line.lower()
+            if any(
+                k in low
+                for k in (
+                    "error",
+                    "fatal",
+                    "failed",
+                    "cannot",
+                    "no such",
+                    "vf_animejanai",
+                    "tensorrt",
+                    "engine",
+                )
+            ):
+                self.log(f"  mpv live: {line}")
+
+        try:
+            proc = start_live_process(
+                launch.cmd, cwd=launch.cwd, on_line=on_live_line
+            )
+        except OSError as exc:
+            messagebox.showerror(APP_NAME, f"Failed to launch mpv: {exc}")
+            return
+        self.live_proc = proc
+        self.live_token = spec.token
+        msg = (
+            f"live playing {spec.token} — close the mpv window or click Stop live"
+        )
+        self.log(msg)
+        self.prog_label.configure(text=msg)
+        self._sync_live_buttons()
+        self.root.after(400, self._poll_live)
+
+    def _poll_live(self) -> None:
+        proc = self.live_proc
+        if proc is None:
+            return
+        if proc.poll() is not None:
+            token = self.live_token
+            self.live_proc = None
+            self.live_token = ""
+            self.log(f"live: mpv window closed" + (f" ({token})" if token else ""))
+            self._sync_live_buttons()
+            if not self.running:
+                self.prog_label.configure(text="Idle")
+            return
+        try:
+            if self.root.winfo_exists():
+                self.root.after(400, self._poll_live)
+        except Exception:
+            pass
+
+    def _stop_live(self) -> None:
+        proc = self.live_proc
+        token = self.live_token
+        self.live_proc = None
+        self.live_token = ""
+        if proc is not None and proc.poll() is None:
+            kill_tree(proc)
+            self.log("live: stopped" + (f" ({token})" if token else ""))
+        self._sync_live_buttons()
+        if not self.running:
+            self.prog_label.configure(text="Idle")
 
 
 def run_app() -> None:
