@@ -31,12 +31,15 @@ class ModelSpec:
 
 
 # Filename tokens — keep in sync with README.
+# FSRCNNX 56 is 4080-only. Never emit _SURF, _MAC, _LAPTOP, or _GLSL on this token.
 TOKEN_FSRCNNX16_4080 = "FSRCNNX16_4080"
+TOKEN_FSRCNNX56_4080 = "FSRCNNX56_4080"
 TOKEN_FSRCNNX8_LAPTOP = "FSRCNNX8_LAPTOP"
 TOKEN_ANIME4KFAST_LAPTOP = "ANIME4KFAST_LAPTOP"
 TOKEN_ANIMEJANAI_BAL_4080 = "ANIMEJANAI_BAL_4080"
 
 FSRCNNX16_SHADER = "FSRCNNX_x2_16-0-4-1.glsl"
+FSRCNNX56_SHADER = "FSRCNNX_x2_56-16-4-1.glsl"
 FSRCNNX8_SHADER = "FSRCNNX_x2_8-0-4-1.glsl"
 
 # Exact Fast Mode A chain. On disk, names may differ slightly and are resolved
@@ -61,6 +64,20 @@ MODELS: tuple[ModelSpec, ...] = (
         group="A",
         backend="mpv_glsl",
         shaders=(FSRCNNX16_SHADER,),
+        default_enabled=True,
+        content_group="standard",
+    ),
+    ModelSpec(
+        token=TOKEN_FSRCNNX56_4080,
+        ui_label="FSRCNNX ×2 56 — RTX 4080 Super",
+        device_tag="4080",
+        device_label="RTX 4080 Super",
+        content="Live action / general (also run on anime by default)",
+        purpose="Heavier igv FSRCNNX_x2_56-16-4-1. Same family as 16, larger network.",
+        helper="RTX 4080 Super · FSRCNNX 56 · heavier than 16 · live-action · not a laptop profile",
+        group="A",
+        backend="mpv_glsl",
+        shaders=(FSRCNNX56_SHADER,),
         default_enabled=True,
         content_group="standard",
     ),

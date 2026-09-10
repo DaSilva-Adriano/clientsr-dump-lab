@@ -7,7 +7,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from app.catalog import ANIME4K_FAST_MODE_A, ModelSpec
+from app.catalog import ANIME4K_FAST_MODE_A, FSRCNNX56_SHADER, ModelSpec
 from app.winproc import format_cmd, run_logged
 
 LogCb = Callable[[str], None]
@@ -20,6 +20,14 @@ class BackendError(RuntimeError):
 
 # Trailing quality letter used by Anime4K filenames.
 _QUALITY = ("UL", "VL", "HQ", "S", "M", "L")
+
+# FSRCNNX ×2 56: on-disk name may use hyphens or underscores. 16 and 8 stay exact.
+_FSRCNNX56_NAMES = frozenset(
+    {
+        FSRCNNX56_SHADER.lower(),
+        "fsrcnnx_x2_56_16_4_1.glsl",
+    }
+)
 
 
 def _list_shaders(shaders_dir: Path) -> list[Path]:
@@ -36,7 +44,11 @@ def _list_shaders(shaders_dir: Path) -> list[Path]:
 
 
 def resolve_shader(shaders_dir: Path, expected: str, *, fuzzy: bool) -> Path | None:
-    """Resolve a shader file. FSRCNNX is exact (case-insensitive). Anime4K may fuzzy-match."""
+    """Resolve a shader file.
+
+    FSRCNNX 16/8 are exact (case-insensitive). FSRCNNX 56 also accepts the
+    underscore-on-disk name ``FSRCNNX_x2_56_16_4_1.glsl``. Anime4K may fuzzy-match.
+    """
     files = _list_shaders(shaders_dir)
     if not files:
         return None
@@ -44,6 +56,10 @@ def resolve_shader(shaders_dir: Path, expected: str, *, fuzzy: bool) -> Path | N
     for f in files:
         if f.name.lower() == expected_l:
             return f
+    if expected_l in _FSRCNNX56_NAMES:
+        for f in files:
+            if f.name.lower() in _FSRCNNX56_NAMES:
+                return f
     if not fuzzy:
         return None
 

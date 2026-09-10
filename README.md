@@ -77,6 +77,7 @@ Group **A** (standard) defaults **ON**. Group **B** (anime / drawing) has a mast
 | UI label | Token (filename) | Device represented | Content | What it is | Backend |
 |---|---|---|---|---|---|
 | FSRCNNX ×2 16 — RTX 4080 Super | `FSRCNNX16_4080` | RTX 4080 Super | Live action / general (also run on anime by default) | Best live-action shader the 4080 can run live. igv FSRCNNX_x2_16-0-4-1 | plain mpv + shader |
+| FSRCNNX ×2 56 — RTX 4080 Super | `FSRCNNX56_4080` | RTX 4080 Super | Live action / general (also run on anime by default) | Heavier igv FSRCNNX_x2_56-16-4-1. Same family as 16, larger network. 4080-only — not the laptop profile | plain mpv + shader |
 | FSRCNNX ×2 8 — laptops (Mac + Surface) | `FSRCNNX8_LAPTOP` | MacBook Air M4 + Surface Laptop 4 | Live action / general (also run on anime by default) | Best live-action shader both laptops can run live. igv FSRCNNX_x2_8-0-4-1 | plain mpv + shader |
 | Anime4K Fast Mode A — laptops (Mac + Surface) | `ANIME4KFAST_LAPTOP` | MacBook Air M4 + Surface Laptop 4 | 2D animation / line art | Best Anime4K chain both laptops can run live. v4 Fast Mode A (S/M shaders), not HQ/VL | plain mpv + shader chain |
 | AnimeJaNai Balanced — RTX 4080 Super | `ANIMEJANAI_BAL_4080` | RTX 4080 Super | 2D animation | Best anime model the 4080 can run live. 2x_AnimeJaNai HD V3 Balanced. Not a laptop profile | AnimeJaNai mpv |
@@ -91,6 +92,7 @@ Input `v-beauty-1080p-24fps.mp4` → outputs in the chosen output folder:
 
 ```
 v-beauty-1080p-24fps-FSRCNNX16_4080.mp4
+v-beauty-1080p-24fps-FSRCNNX56_4080.mp4
 v-beauty-1080p-24fps-FSRCNNX8_LAPTOP.mp4
 v-beauty-1080p-24fps-ANIME4KFAST_LAPTOP.mp4
 v-beauty-1080p-24fps-ANIMEJANAI_BAL_4080.mp4
@@ -130,12 +132,15 @@ Jobs run **sequentially** on the GPU. Optional **two parallel GLSL jobs** is off
 
 Place these files in the shaders directory (default `C:\Tools\mpv\portable_config\shaders\`). If a file is missing, that model row is marked **Missing** with the expected filename and Start refuses that model.
 
-**FSRCNNX** (exact names):
+**FSRCNNX** (16 and 8: exact names, case-insensitive. 56 also accepts the underscore-on-disk name):
 
 - `FSRCNNX_x2_16-0-4-1.glsl`
+- `FSRCNNX_x2_56-16-4-1.glsl` (or `FSRCNNX_x2_56_16_4_1.glsl` on disk)
 - `FSRCNNX_x2_8-0-4-1.glsl`
 
-Upstream: [igv/FSRCNN-TensorFlow](https://github.com/igv/FSRCNN-TensorFlow) (the GLSL hooks commonly shipped as `FSRCNNX_x2_16-0-4-1.glsl` / `FSRCNNX_x2_8-0-4-1.glsl`).
+FSRCNNX 56 is **4080-only** (token `FSRCNNX56_4080`). It is not a Mac/Surface live preset. If that file is missing, only the 56 row is refused; 16 and 8 still run. Do not stack 56 as a 4× pass — output stays locked to 2×.
+
+Upstream: [igv/FSRCNN-TensorFlow](https://github.com/igv/FSRCNN-TensorFlow) (the GLSL hooks commonly shipped as `FSRCNNX_x2_16-0-4-1.glsl` / `FSRCNNX_x2_56-16-4-1.glsl` / `FSRCNNX_x2_8-0-4-1.glsl`).
 
 **Anime4K Fast Mode A** (exact order; Windows mpv separator is `;`):
 
@@ -152,6 +157,7 @@ Upstream: [bloc97/Anime4K](https://github.com/bloc97/Anime4K). If a filename on 
 ## GUI notes
 
 - Queue: add files / add folder / drag-and-drop. Columns: file, WxH, fps, duration, class, content tag, status.
+- Group A has three checkboxes, default ON: FSRCNNX 16, FSRCNNX 56 (heavier than 16, RTX 4080 Super only — not the laptop profile), FSRCNNX 8.
 - Content tag default **Live**. Setting rows to **Animation** does not enable Group B.
 - Dry-run prints the exact mpv + ffmpeg commands and writes no video.
 - Status bar: ffmpeg / mpv / AnimeJaNai / GPU (`nvidia-smi`).
