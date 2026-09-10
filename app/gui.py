@@ -17,7 +17,9 @@ import customtkinter as ctk
 from app import APP_NAME
 from app.backend_animejanai import ENGINE_NOTE
 from app.backend_live import (
+    LIVE_NONE_LABEL,
     LiveError,
+    TOKEN_LIVE_NONE,
     model_ready_live,
     prepare_live,
     start_live_process,
@@ -79,8 +81,12 @@ COL_W = {
 FORCE_VALUES = ("Off (auto)", "720p", "2160p")
 
 
+def _live_none_label() -> str:
+    return f"{LIVE_NONE_LABEL}  [{TOKEN_LIVE_NONE}]"
+
+
 def _live_model_labels() -> list[str]:
-    return [f"{m.ui_label}  [{m.token}]" for m in MODELS]
+    return [f"{m.ui_label}  [{m.token}]" for m in MODELS] + [_live_none_label()]
 
 
 X265_PRESETS = (
@@ -708,7 +714,8 @@ class DumpLabApp:
         self.stop_live_btn.pack(side="left", padx=4)
         ctk.CTkLabel(
             bar,
-            text="Same mpv + shaders as the dump. Windowed playback, no file written.",
+            text="Same mpv + shaders as the dump. Windowed playback, no file written. "
+            "None plays the source with no model (test).",
             text_color="#8a8a8a",
             font=ctk.CTkFont(size=12),
         ).grid(row=3, column=0, columnspan=5, sticky="w", padx=12, pady=(0, 8))
@@ -1232,14 +1239,27 @@ class DumpLabApp:
         self.root.destroy()
 
     # ------------------------------------------------------------------ live
+    def _live_is_passthrough(self, val: str | None = None) -> bool:
+        raw = (val if val is not None else self.live_combo.get() or "").strip()
+        return (
+            raw.endswith(f"[{TOKEN_LIVE_NONE}]")
+            or raw == TOKEN_LIVE_NONE
+            or raw.startswith(LIVE_NONE_LABEL)
+        )
+
     def _live_spec_from_combo(self) -> ModelSpec | None:
         val = (self.live_combo.get() or "").strip()
+        if self._live_is_passthrough(val):
+            return None
         for spec in MODELS:
             if val.endswith(f"[{spec.token}]") or val == spec.token:
                 return spec
         return MODELS_BY_TOKEN.get(val)
 
     def _set_live_combo_token(self, token: str) -> None:
+        if token == TOKEN_LIVE_NONE:
+            self.live_combo.set(_live_none_label())
+            return
         for label in _live_model_labels():
             if label.endswith(f"[{token}]"):
                 self.live_combo.set(label)
@@ -1258,23 +1278,25 @@ class DumpLabApp:
                 state="disabled" if self.running else "normal"
             )
 
-    def _playable_item(self, item: QueueItem | None) -> bool:
+    def _playable_item(self, item: QueueItem | None, *, passthrough: bool = False) -> bool:
         if item is None:
             return False
         if item.width <= 0 or item.status == "probing":
             return False
+        if passthrough:
+            return True
         if item.height_class == CLASS_UNSUPPORTED:
             return False
         if not item.target_w or not item.target_h:
             return False
         return True
 
-    def _live_source_item(self) -> QueueItem | None:
+    def _live_source_item(self, *, passthrough: bool = False) -> QueueItem | None:
         iids = self._selected_iids()
         playable: list[QueueItem] = []
         for iid in iids:
             item = self.items.get(iid)
-            if item is not None and self._playable_item(item):
+            if item is not None and self._playable_item(item, passthrough=passthrough):
                 playable.append(item)
         if not playable:
             return None
@@ -1300,7 +1322,12 @@ class DumpLabApp:
                 "Select one queue file to play live (not unsupported).",
             )
             return
-        item = self._live_source_item()
+        passthrough = self._live_is_passthrough()
+        spec = self._live_spec_from_combo()
+        if spec is None and not passthrough:
+            messagebox.showerror(APP_NAME, "Pick a Live model in the combobox.")
+            return
+        item = self._live_source_item(passthrough=passthrough)
         if item is None:
             first = self.items.get(iids[0])
             if first is not None and first.status == "probing":
@@ -1318,12 +1345,9 @@ class DumpLabApp:
             messagebox.showerror(
                 APP_NAME,
                 "Selected file is unsupported for 2× "
-                "(360p or 1080p, or Force 2× target).",
+                "(360p or 1080p, or Force 2× target). "
+                "Pick None — no model (test) to play the source anyway.",
             )
-            return
-        spec = self._live_spec_from_combo()
-        if spec is None:
-            messagebox.showerror(APP_NAME, "Pick a Live model in the combobox.")
             return
         err = model_ready_live(
             spec,
@@ -1393,9 +1417,9 @@ class DumpLabApp:
             messagebox.showerror(APP_NAME, f"Failed to launch mpv: {exc}")
             return
         self.live_proc = proc
-        self.live_token = spec.token
+        self.live_token = launch.token
         msg = (
-            f"live playing {spec.token} — close the mpv window or click Stop live"
+            f"live playing {launch.token} — close the mpv window or click Stop live"
         )
         self.log(msg)
         self.prog_label.configure(text=msg)

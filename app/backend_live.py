@@ -41,6 +41,10 @@ GLSL_LIVE_TOKENS = frozenset(
     {"FSRCNNX16_4080", "FSRCNNX8_LAPTOP", "ANIME4KFAST_LAPTOP"}
 )
 
+# Live-only. Never a dump catalog token — no MP4, no sidecar.
+TOKEN_LIVE_NONE = "NONE"
+LIVE_NONE_LABEL = "None — no model (test)"
+
 
 class LiveError(RuntimeError):
     pass
@@ -85,13 +89,21 @@ def resolve_animejanai_live_binary(configured: Path) -> tuple[Path | None, bool]
     return None, False
 
 
+def model_ready_passthrough(mpv: Path) -> str | None:
+    if not mpv.is_file():
+        return f"{TOKEN_LIVE_NONE}: plain mpv missing: {mpv}"
+    return None
+
+
 def model_ready_live(
-    spec: ModelSpec,
+    spec: ModelSpec | None,
     mpv: Path,
     shaders_dir: Path,
     animejanai_configured: Path,
 ) -> str | None:
     """None if this model can play live. Errors reuse dump readiness strings."""
+    if spec is None or spec.token == TOKEN_LIVE_NONE:
+        return model_ready_passthrough(mpv)
     if spec.backend == "mpv_glsl":
         return model_ready_glsl(spec, mpv, shaders_dir)
     if spec.backend == "animejanai":
@@ -102,6 +114,25 @@ def model_ready_live(
             return None
         return err
     return f"{spec.token}: unknown backend {spec.backend}"
+
+
+def build_passthrough_live_cmd(mpv: Path, source: Path) -> list[str]:
+    """Windowed source playback. No shaders, no vf=gpu, native resolution."""
+    return [
+        str(mpv),
+        "--no-config",
+        "--force-window=yes",
+        "--keep-open=yes",
+        "--idle=no",
+        "--osc=yes",
+        "--osd-level=1",
+        "--vo=gpu-next",
+        "--gpu-api=auto",
+        "--hwdec=no",
+        "--framedrop=vo",
+        f"--title=ClientSR live — {TOKEN_LIVE_NONE}",
+        str(source),
+    ]
 
 
 def build_mpv_glsl_live_cmd(
@@ -165,8 +196,23 @@ def build_animejanai_live_cmd(
     ]
 
 
+def prepare_passthrough_live(source: Path, *, mpv: Path) -> LiveLaunch:
+    """Build a no-model live argv. Does not spawn. Raises LiveError if not ready."""
+    err = model_ready_passthrough(mpv)
+    if err:
+        raise LiveError(err)
+    if not source.is_file():
+        raise LiveError(f"source missing: {source}")
+    return LiveLaunch(
+        cmd=build_passthrough_live_cmd(mpv, source),
+        cwd=None,
+        token=TOKEN_LIVE_NONE,
+        notes=["passthrough: no shaders, no AnimeJaNai, native resolution (test)"],
+    )
+
+
 def prepare_live(
-    spec: ModelSpec,
+    spec: ModelSpec | None,
     source: Path,
     target_w: int,
     target_h: int,
@@ -176,6 +222,8 @@ def prepare_live(
     animejanai_configured: Path,
 ) -> LiveLaunch:
     """Build a live argv. Does not spawn. Raises LiveError if not ready."""
+    if spec is None or spec.token == TOKEN_LIVE_NONE:
+        return prepare_passthrough_live(source, mpv=mpv)
     err = model_ready_live(spec, mpv, shaders_dir, animejanai_configured)
     if err:
         raise LiveError(err)
@@ -286,12 +334,17 @@ def start_live_process(
 __all__ = [
     "ENGINE_NOTE",
     "GLSL_LIVE_TOKENS",
+    "LIVE_NONE_LABEL",
     "LiveError",
     "LiveLaunch",
+    "TOKEN_LIVE_NONE",
     "build_animejanai_live_cmd",
     "build_mpv_glsl_live_cmd",
+    "build_passthrough_live_cmd",
     "model_ready_live",
+    "model_ready_passthrough",
     "prepare_live",
+    "prepare_passthrough_live",
     "resolve_animejanai_live_binary",
     "start_live_process",
     "write_live_conf",
