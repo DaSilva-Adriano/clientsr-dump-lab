@@ -1,6 +1,8 @@
 """Windowed live playback using the same mpv binaries and shaders as dumps.
 
-Encode flags (--o, --ovc, --of, --vo=lavc, --untimed, --no-audio) stay dump-only.
+Encode flags (--o, --ovc, --of, --vo=lavc, --untimed, --no-audio, --hwdec=no)
+stay dump-only. Live uses GPU decode (nvdec-copy, shader-safe copy) so CPU
+watts stay close to Chrome; GLSL / vf=gpu still get a texture they can hook.
 """
 
 from __future__ import annotations
@@ -20,6 +22,9 @@ from app.backend_mpv import (
 )
 from app.catalog import MODELS, ModelSpec
 from app.settings import (
+    DEFAULT_LIVE_HWDEC,
+    LIVE_HWDEC_CHOICES,
+    LIVE_HWDEC_FALLBACK,
     animejanai_portable_config,
     appdata_dir,
     resolve_animejanai_binary,
@@ -40,8 +45,24 @@ save-position-on-quit=no
 GLSL_LIVE_TOKENS = frozenset(m.token for m in MODELS if m.backend == "mpv_glsl")
 
 # Live-only. Never a dump catalog token — no MP4, no sidecar.
-TOKEN_LIVE_NONE = "NONE"
-LIVE_NONE_LABEL = "None — no model (test)"
+TOKEN_LIVE_NONE = "LIVE_NONE"
+LIVE_NONE_LABEL = "None — native (no AI, hw decode)"
+
+# mpv ERR/WARN lines that mean --hwdec=nvdec-copy did not init.
+_HWDEC_FAIL_MARKERS = (
+    "failed to initialize a hardware decoder",
+    "failed to initialize nvdec",
+    "could not initialize nvdec",
+    "failed to open nvdec",
+    "cannot load nvcuda",
+    "cannot load nvcuvid",
+    "no cuda-capable device",
+    "cuda_error_no_device",
+    "could not create cuda context",
+    "failed to create cuda context",
+    "nvdec-copy failed",
+    "hwdec failed",
+)
 
 
 class LiveError(RuntimeError):
@@ -53,9 +74,68 @@ class LiveLaunch:
     cmd: list[str]
     cwd: Path | None
     token: str
+    hwdec: str = DEFAULT_LIVE_HWDEC
     notes: list[str] = field(default_factory=list)
     engine_note: bool = False
     mpvnet_fallback: bool = False
+
+
+def normalize_live_hwdec(value: str | None) -> str:
+    raw = (value or DEFAULT_LIVE_HWDEC).strip().lower()
+    if raw in LIVE_HWDEC_CHOICES:
+        return raw
+    return DEFAULT_LIVE_HWDEC
+
+
+def live_decode_args(hwdec: str) -> list[str]:
+    """GPU decode + presentation flags for every live session.
+
+    nvdec-copy (default): NVDEC on the NVIDIA chip, then a copy into a
+    shader-safe buffer so GLSL and vf=gpu still work. Plain nvdec (zero-copy)
+    often breaks those hooks. Do not pass --untimed on live.
+    """
+    return [
+        f"--hwdec={hwdec}",
+        "--hwdec-codecs=h264,hevc,av1,vp9,avc,mpeg2",
+        "--vd-lavc-dr=yes",
+        "--video-sync=audio",
+        "--framedrop=vo",
+        "--interpolation=no",
+    ]
+
+
+def cmd_with_hwdec(cmd: list[str], hwdec: str) -> list[str]:
+    """Copy argv, replacing any --hwdec=… (or inserting before the source path)."""
+    out: list[str] = []
+    replaced = False
+    skip_next = False
+    for arg in cmd:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg.startswith("--hwdec="):
+            if not replaced:
+                out.append(f"--hwdec={hwdec}")
+                replaced = True
+            continue
+        if arg == "--hwdec":
+            if not replaced:
+                out.append(f"--hwdec={hwdec}")
+                replaced = True
+            skip_next = True
+            continue
+        out.append(arg)
+    if not replaced:
+        if out:
+            out.insert(-1, f"--hwdec={hwdec}")
+        else:
+            out.append(f"--hwdec={hwdec}")
+    return out
+
+
+def is_hwdec_init_failure(line: str) -> bool:
+    low = line.lower()
+    return any(m in low for m in _HWDEC_FAIL_MARKERS)
 
 
 def write_live_conf() -> Path:
@@ -114,8 +194,13 @@ def model_ready_live(
     return f"{spec.token}: unknown backend {spec.backend}"
 
 
-def build_passthrough_live_cmd(mpv: Path, source: Path) -> list[str]:
-    """Windowed source playback. No shaders, no vf=gpu, native resolution."""
+def build_passthrough_live_cmd(
+    mpv: Path,
+    source: Path,
+    *,
+    hwdec: str = DEFAULT_LIVE_HWDEC,
+) -> list[str]:
+    """Windowed source playback. No shaders, no vf=gpu, native window scale."""
     return [
         str(mpv),
         "--no-config",
@@ -126,8 +211,7 @@ def build_passthrough_live_cmd(mpv: Path, source: Path) -> list[str]:
         "--osd-level=1",
         "--vo=gpu-next",
         "--gpu-api=auto",
-        "--hwdec=no",
-        "--framedrop=vo",
+        *live_decode_args(hwdec),
         f"--title=ClientSR live — {TOKEN_LIVE_NONE}",
         str(source),
     ]
@@ -140,6 +224,8 @@ def build_mpv_glsl_live_cmd(
     target_w: int,
     target_h: int,
     token: str,
+    *,
+    hwdec: str = DEFAULT_LIVE_HWDEC,
 ) -> list[str]:
     return [
         str(mpv),
@@ -151,8 +237,7 @@ def build_mpv_glsl_live_cmd(
         "--osd-level=1",
         "--vo=gpu-next",
         "--gpu-api=auto",
-        "--hwdec=no",
-        "--framedrop=vo",
+        *live_decode_args(hwdec),
         f"--glsl-shaders={glsl_shaders_arg(shaders)}",
         f"--vf=gpu=w={target_w}:h={target_h}",
         f"--title=ClientSR live — {token}",
@@ -167,6 +252,8 @@ def build_animejanai_live_cmd(
     source: Path,
     target_w: int,
     target_h: int,
+    *,
+    hwdec: str = DEFAULT_LIVE_HWDEC,
 ) -> list[str]:
     """Windowed playback through the bundle's @aji filter + vo=gpu-next.
 
@@ -175,6 +262,9 @@ def build_animejanai_live_cmd(
     "Failed to create inference context" and is disabled, and the leftover
     gpu filter converts CUDA frames to a black rgb0 canvas. @aji already
     outputs 2x; autofit sizes the window to that canvas.
+
+    Do not --no-config (that would drop vf_animejanai). CLI --hwdec= wins
+    over any hwdec the bundle config already set.
     """
     return [
         str(binary),
@@ -186,7 +276,7 @@ def build_animejanai_live_cmd(
         "--osc=yes",
         "--osd-level=1",
         "--vo=gpu-next",
-        "--framedrop=vo",
+        *live_decode_args(hwdec),
         "--save-position-on-quit=no",
         f"--autofit={target_w}x{target_h}",
         "--title=ClientSR live — ANIMEJANAI_BAL_4080",
@@ -194,18 +284,28 @@ def build_animejanai_live_cmd(
     ]
 
 
-def prepare_passthrough_live(source: Path, *, mpv: Path) -> LiveLaunch:
+def prepare_passthrough_live(
+    source: Path,
+    *,
+    mpv: Path,
+    hwdec: str = DEFAULT_LIVE_HWDEC,
+) -> LiveLaunch:
     """Build a no-model live argv. Does not spawn. Raises LiveError if not ready."""
+    hwdec = normalize_live_hwdec(hwdec)
     err = model_ready_passthrough(mpv)
     if err:
         raise LiveError(err)
     if not source.is_file():
         raise LiveError(f"source missing: {source}")
     return LiveLaunch(
-        cmd=build_passthrough_live_cmd(mpv, source),
+        cmd=build_passthrough_live_cmd(mpv, source, hwdec=hwdec),
         cwd=None,
         token=TOKEN_LIVE_NONE,
-        notes=["passthrough: no shaders, no AnimeJaNai, native resolution (test)"],
+        hwdec=hwdec,
+        notes=[
+            "LIVE_NONE: no shaders, no AnimeJaNai, no vf=gpu — "
+            "native window scale (Chrome-like baseline)"
+        ],
     )
 
 
@@ -218,10 +318,12 @@ def prepare_live(
     mpv: Path,
     shaders_dir: Path,
     animejanai_configured: Path,
+    hwdec: str = DEFAULT_LIVE_HWDEC,
 ) -> LiveLaunch:
     """Build a live argv. Does not spawn. Raises LiveError if not ready."""
+    hwdec = normalize_live_hwdec(hwdec)
     if spec is None or spec.token == TOKEN_LIVE_NONE:
-        return prepare_passthrough_live(source, mpv=mpv)
+        return prepare_passthrough_live(source, mpv=mpv, hwdec=hwdec)
     err = model_ready_live(spec, mpv, shaders_dir, animejanai_configured)
     if err:
         raise LiveError(err)
@@ -242,12 +344,13 @@ def prepare_live(
         except BackendError as exc:
             raise LiveError(f"{spec.token}: {exc}") from exc
         cmd = build_mpv_glsl_live_cmd(
-            mpv, source, shaders, target_w, target_h, spec.token
+            mpv, source, shaders, target_w, target_h, spec.token, hwdec=hwdec
         )
         return LiveLaunch(
             cmd=cmd,
             cwd=None,
             token=spec.token,
+            hwdec=hwdec,
             notes=[f"{spec.token} shaders: " + " → ".join(shader_notes)],
         )
 
@@ -263,7 +366,7 @@ def prepare_live(
             )
         include_conf = write_live_conf()
         cmd = build_animejanai_live_cmd(
-            binary, portable, include_conf, source, target_w, target_h
+            binary, portable, include_conf, source, target_w, target_h, hwdec=hwdec
         )
         notes = [
             f"AnimeJaNai binary: {binary}",
@@ -279,6 +382,7 @@ def prepare_live(
             cmd=cmd,
             cwd=binary.parent,
             token=spec.token,
+            hwdec=hwdec,
             notes=notes,
             engine_note=True,
             mpvnet_fallback=mpvnet_fallback,
@@ -332,6 +436,8 @@ def start_live_process(
 __all__ = [
     "ENGINE_NOTE",
     "GLSL_LIVE_TOKENS",
+    "LIVE_HWDEC_CHOICES",
+    "LIVE_HWDEC_FALLBACK",
     "LIVE_NONE_LABEL",
     "LiveError",
     "LiveLaunch",
@@ -339,8 +445,12 @@ __all__ = [
     "build_animejanai_live_cmd",
     "build_mpv_glsl_live_cmd",
     "build_passthrough_live_cmd",
+    "cmd_with_hwdec",
+    "is_hwdec_init_failure",
+    "live_decode_args",
     "model_ready_live",
     "model_ready_passthrough",
+    "normalize_live_hwdec",
     "prepare_live",
     "prepare_passthrough_live",
     "resolve_animejanai_live_binary",

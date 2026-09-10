@@ -20,6 +20,9 @@ DEFAULT_SHADERS = r"C:\Tools\mpv\portable_config\shaders"
 DEFAULT_X265_PRESET = "medium"
 DEFAULT_CRF = 12
 THESIS_CRF = 12
+DEFAULT_LIVE_HWDEC = "nvdec-copy"
+LIVE_HWDEC_FALLBACK = "auto-copy"
+LIVE_HWDEC_CHOICES = ("nvdec-copy", "auto-copy", "no")
 
 
 def appdata_dir() -> Path:
@@ -60,6 +63,8 @@ class AppConfig:
     crf_unlocked: bool = False
     two_parallel_glsl: bool = False
     animejanai_engine_note: bool = False
+    # Play live only. Dumps ignore this key and always use --hwdec=no.
+    live_hwdec: str = DEFAULT_LIVE_HWDEC
 
     def ffmpeg_path(self) -> Path:
         return Path(self.ffmpeg)
@@ -124,6 +129,8 @@ def load_config() -> AppConfig:
     cfg.crf_unlocked = bool(raw.get("crf_unlocked", False))
     cfg.two_parallel_glsl = bool(raw.get("two_parallel_glsl", False))
     cfg.animejanai_engine_note = bool(raw.get("animejanai_engine_note", False))
+    live_hwdec = _as_str(raw.get("live_hwdec"), DEFAULT_LIVE_HWDEC).strip().lower()
+    cfg.live_hwdec = live_hwdec if live_hwdec in LIVE_HWDEC_CHOICES else DEFAULT_LIVE_HWDEC
     return cfg
 
 

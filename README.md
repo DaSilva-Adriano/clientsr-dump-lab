@@ -165,13 +165,15 @@ Upstream: [bloc97/Anime4K](https://github.com/bloc97/Anime4K). If a filename on 
 
 ## Play live
 
-Select **one** queue file (or the first playable among a multi-selection), pick a **Live model** in the combobox (every catalog token, including Group B even if the dump switch is off), then **Play live**. That opens a visible mpv window using the **same binary and shaders as the dump** — GLSL models via plain `mpv.exe --glsl-shaders=`, AnimeJaNai via the bundle `mpv.exe --config-dir=`. Audio stays on. No MP4, sidecar, or manifest row is written.
+Play live is for watts / dropped-frame checks against Chrome and across models. Decode is **NVDEC-copy** (`--hwdec=nvdec-copy`, falling back once to `auto-copy` if NVDEC fails to init) so CPU watts stay close to Chrome; GLSL shaders still get a copy they can hook. Dumps remain `--hwdec=no` and `--vo=lavc` for a deterministic encode.
 
-**None — no model (test)** (`NONE`) is live-only: plain `mpv.exe`, no GLSL, no AnimeJaNai, native resolution. Use it to check that the file and mpv window work without a shader. It is not a dump catalog token. Unsupported 2× heights are allowed in this mode.
+Select **one** queue file (or the first playable among a multi-selection), pick a **Live model** in the combobox (every catalog token, including Group B even if the dump switch is off), then **Play live**. That opens a visible mpv window using the **same binary and shaders as the dump** — GLSL models via plain `mpv.exe --glsl-shaders=`, AnimeJaNai via the bundle `mpv.exe --config-dir=` (no `--no-config`; CLI `--hwdec=` wins over the bundle). Audio stays on. No MP4, sidecar, or manifest row is written.
+
+**None — native (no AI, hw decode)** (`LIVE_NONE`) is live-only: plain `mpv.exe`, no GLSL, no AnimeJaNai, no `--vf=gpu` 2× lock — mpv scales to the window like a browser. Use it as the watts baseline vs Chrome. It is not a dump catalog token. Unsupported 2× heights are allowed in this mode. Catalog models still force 2× (`--vf=gpu=w=…:h=…` for GLSL; AnimeJaNai via the bundle filter + autofit).
 
 Stop with **Stop live** or by closing the mpv window. A dump batch and live playback cannot share the GPU: Play live is refused while dumps run; Start dumps offers to stop a live window first.
 
-In mpv, **Shift+I** opens the profiler (frame times / shader cost).
+In mpv, **Shift+I** opens the profiler (frame times / shader cost). Settings may persist `live_hwdec` (`nvdec-copy` / `auto-copy` / `no`); dumps ignore that key.
 
 ## Project layout
 

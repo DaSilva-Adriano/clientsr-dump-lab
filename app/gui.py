@@ -19,8 +19,12 @@ from app.backend_animejanai import ENGINE_NOTE
 from app.backend_live import (
     LIVE_NONE_LABEL,
     LiveError,
+    LiveLaunch,
     TOKEN_LIVE_NONE,
+    cmd_with_hwdec,
+    is_hwdec_init_failure,
     model_ready_live,
+    normalize_live_hwdec,
     prepare_live,
     start_live_process,
 )
@@ -49,6 +53,9 @@ from app.probe import (
     probe_tools,
 )
 from app.settings import (
+    DEFAULT_LIVE_HWDEC,
+    LIVE_HWDEC_CHOICES,
+    LIVE_HWDEC_FALLBACK,
     THESIS_CRF,
     AppConfig,
     appdata_dir,
@@ -86,7 +93,7 @@ def _live_none_label() -> str:
 
 
 def _live_model_labels() -> list[str]:
-    return [f"{m.ui_label}  [{m.token}]" for m in MODELS] + [_live_none_label()]
+    return [_live_none_label()] + [f"{m.ui_label}  [{m.token}]" for m in MODELS]
 
 
 X265_PRESETS = (
@@ -177,8 +184,8 @@ class SettingsDialog(ctk.CTkToplevel):
         super().__init__(master.root)
         self.master_app = master
         self.title("Settings — ClientSR Dump Lab")
-        self.geometry("820x640")
-        self.minsize(720, 560)
+        self.geometry("820x700")
+        self.minsize(720, 600)
         self.transient(master.root)
         self.grab_set()
         self.cfg = master.cfg
@@ -245,6 +252,25 @@ class SettingsDialog(ctk.CTkToplevel):
             text="Two parallel GLSL jobs (VRAM — off by default)",
             variable=self.parallel,
         ).grid(row=1, column=0, columnspan=5, sticky="w", pady=(8, 0), padx=4)
+
+        ctk.CTkLabel(opts, text="Live hwdec").grid(
+            row=2, column=0, sticky="w", padx=4, pady=(10, 0)
+        )
+        self.live_hwdec = ctk.CTkComboBox(
+            opts, values=list(LIVE_HWDEC_CHOICES), width=140
+        )
+        current_hwdec = (
+            self.cfg.live_hwdec
+            if self.cfg.live_hwdec in LIVE_HWDEC_CHOICES
+            else DEFAULT_LIVE_HWDEC
+        )
+        self.live_hwdec.set(current_hwdec)
+        self.live_hwdec.grid(row=2, column=1, padx=8, pady=(10, 0))
+        ctk.CTkLabel(
+            opts,
+            text="Play live only (dumps ignore). nvdec-copy = NVDEC + shader-safe copy.",
+            text_color="#8a8a8a",
+        ).grid(row=2, column=2, columnspan=3, sticky="w", padx=8, pady=(10, 0))
 
         warn = ctk.CTkLabel(
             self,
@@ -314,6 +340,7 @@ class SettingsDialog(ctk.CTkToplevel):
             crf_unlocked=bool(self.unlock_crf.get()),
             two_parallel_glsl=bool(self.parallel.get()),
             animejanai_engine_note=self.master_app.cfg.animejanai_engine_note,
+            live_hwdec=normalize_live_hwdec(self.live_hwdec.get()),
         )
         if cfg.crf_unlocked:
             try:
@@ -365,6 +392,9 @@ class DumpLabApp:
         self.live_proc: subprocess.Popen[str] | None = None
         self.live_token: str = ""
         self._live_ani_noted = False
+        self._live_launch: LiveLaunch | None = None
+        self._live_allow_hwdec_fallback = False
+        self._live_restarting = False
         self._uiq: queue.Queue = queue.Queue()
 
         root.title(APP_NAME)
@@ -714,8 +744,7 @@ class DumpLabApp:
         self.stop_live_btn.pack(side="left", padx=4)
         ctk.CTkLabel(
             bar,
-            text="Same mpv + shaders as the dump. Windowed playback, no file written. "
-            "None plays the source with no model (test).",
+            text="Live uses GPU decode (nvdec-copy), like Chrome. Dumps stay software decode.",
             text_color="#8a8a8a",
             font=ctk.CTkFont(size=12),
         ).grid(row=3, column=0, columnspan=5, sticky="w", padx=12, pady=(0, 8))
@@ -1346,7 +1375,7 @@ class DumpLabApp:
                 APP_NAME,
                 "Selected file is unsupported for 2× "
                 "(360p or 1080p, or Force 2× target). "
-                "Pick None — no model (test) to play the source anyway.",
+                "Pick None — native (no AI, hw decode) to play the source anyway.",
             )
             return
         err = model_ready_live(
@@ -1361,6 +1390,7 @@ class DumpLabApp:
         if self._live_is_running():
             self.log("live: stopping previous mpv")
             self._stop_live()
+        hwdec = normalize_live_hwdec(self.cfg.live_hwdec)
         try:
             launch = prepare_live(
                 spec,
@@ -1370,6 +1400,7 @@ class DumpLabApp:
                 mpv=self.cfg.mpv_path(),
                 shaders_dir=self.cfg.shaders_path(),
                 animejanai_configured=self.cfg.animejanai_path(),
+                hwdec=hwdec,
             )
         except LiveError as exc:
             messagebox.showerror(APP_NAME, str(exc))
@@ -1390,43 +1421,98 @@ class DumpLabApp:
                     text="TensorRT engine builds once and can take several minutes. "
                     "This host has already launched AnimeJaNai at least once this install."
                 )
+        self.log(f"live hwdec={launch.hwdec}")
         self.log(f"mpv live: {format_cmd(launch.cmd)}")
-
-        def on_live_line(line: str) -> None:
-            low = line.lower()
-            if any(
-                k in low
-                for k in (
-                    "error",
-                    "fatal",
-                    "failed",
-                    "cannot",
-                    "no such",
-                    "vf_animejanai",
-                    "tensorrt",
-                    "engine",
-                )
-            ):
-                self.log(f"  mpv live: {line}")
 
         try:
             proc = start_live_process(
-                launch.cmd, cwd=launch.cwd, on_line=on_live_line
+                launch.cmd, cwd=launch.cwd, on_line=self._on_live_mpv_line
             )
         except OSError as exc:
             messagebox.showerror(APP_NAME, f"Failed to launch mpv: {exc}")
             return
         self.live_proc = proc
         self.live_token = launch.token
+        self._live_launch = launch
+        self._live_allow_hwdec_fallback = launch.hwdec == DEFAULT_LIVE_HWDEC
+        self._live_restarting = False
         msg = (
-            f"live playing {launch.token} — close the mpv window or click Stop live"
+            f"live hwdec={launch.hwdec} · playing {launch.token} — "
+            "close the mpv window or click Stop live"
         )
-        self.log(msg)
+        self.log(f"live playing {launch.token} — close the mpv window or click Stop live")
+        self.prog_label.configure(text=msg)
+        self._sync_live_buttons()
+        self.root.after(400, self._poll_live)
+
+    def _on_live_mpv_line(self, line: str) -> None:
+        if self._live_allow_hwdec_fallback and is_hwdec_init_failure(line):
+            self.call_ui(lambda err=line: self._fallback_live_hwdec(err))
+        low = line.lower()
+        if any(
+            k in low
+            for k in (
+                "error",
+                "fatal",
+                "failed",
+                "cannot",
+                "no such",
+                "vf_animejanai",
+                "tensorrt",
+                "engine",
+            )
+        ):
+            self.log(f"  mpv live: {line}")
+
+    def _fallback_live_hwdec(self, error_line: str) -> None:
+        if not self._live_allow_hwdec_fallback:
+            return
+        launch = self._live_launch
+        if launch is None:
+            return
+        self._live_allow_hwdec_fallback = False
+        self._live_restarting = True
+        self.log(f"live: nvdec-copy failed to init: {error_line}")
+        self.log(f"live: restarting once with hwdec={LIVE_HWDEC_FALLBACK}")
+        proc = self.live_proc
+        self.live_proc = None
+        if proc is not None and proc.poll() is None:
+            kill_tree(proc)
+        launch.cmd = cmd_with_hwdec(launch.cmd, LIVE_HWDEC_FALLBACK)
+        launch.hwdec = LIVE_HWDEC_FALLBACK
+        self.log(f"live hwdec={LIVE_HWDEC_FALLBACK}")
+        self.log(f"mpv live: {format_cmd(launch.cmd)}")
+        try:
+            new_proc = start_live_process(
+                launch.cmd, cwd=launch.cwd, on_line=self._on_live_mpv_line
+            )
+        except OSError as exc:
+            self._live_restarting = False
+            self._live_launch = None
+            self.live_token = ""
+            self._sync_live_buttons()
+            if not self.running:
+                self.prog_label.configure(text="Idle")
+            messagebox.showerror(APP_NAME, f"Failed to relaunch mpv with auto-copy: {exc}")
+            return
+        self.live_proc = new_proc
+        self._live_restarting = False
+        msg = (
+            f"live hwdec={LIVE_HWDEC_FALLBACK} · playing {launch.token} — "
+            "close the mpv window or click Stop live"
+        )
         self.prog_label.configure(text=msg)
         self._sync_live_buttons()
         self.root.after(400, self._poll_live)
 
     def _poll_live(self) -> None:
+        if self._live_restarting:
+            try:
+                if self.root.winfo_exists():
+                    self.root.after(400, self._poll_live)
+            except Exception:
+                pass
+            return
         proc = self.live_proc
         if proc is None:
             return
@@ -1434,6 +1520,8 @@ class DumpLabApp:
             token = self.live_token
             self.live_proc = None
             self.live_token = ""
+            self._live_launch = None
+            self._live_allow_hwdec_fallback = False
             self.log(f"live: mpv window closed" + (f" ({token})" if token else ""))
             self._sync_live_buttons()
             if not self.running:
@@ -1450,6 +1538,9 @@ class DumpLabApp:
         token = self.live_token
         self.live_proc = None
         self.live_token = ""
+        self._live_launch = None
+        self._live_allow_hwdec_fallback = False
+        self._live_restarting = False
         if proc is not None and proc.poll() is None:
             kill_tree(proc)
             self.log("live: stopped" + (f" ({token})" if token else ""))
