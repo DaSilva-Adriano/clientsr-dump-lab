@@ -23,6 +23,10 @@ THESIS_CRF = 12
 DEFAULT_LIVE_HWDEC = "nvdec-copy"
 LIVE_HWDEC_FALLBACK = "auto-copy"
 LIVE_HWDEC_CHOICES = ("nvdec-copy", "auto-copy", "no")
+# LIVE_NONE baseline: zero-copy. Not a combo choice. Force-copy checkbox overrides.
+DEFAULT_LIVE_NONE_HWDEC = "nvdec"
+LIVE_NONE_HWDEC_FALLBACK = "d3d11va"
+LIVE_NONE_HWDEC_LAST = "auto"
 
 
 def appdata_dir() -> Path:
@@ -63,8 +67,11 @@ class AppConfig:
     crf_unlocked: bool = False
     two_parallel_glsl: bool = False
     animejanai_engine_note: bool = False
-    # Play live only. Dumps ignore this key and always use --hwdec=no.
+    # Catalog AI live only. Dumps ignore this key and always use --hwdec=no.
+    # LIVE_NONE ignores it and stays nvdec (no copy) unless live_none_force_copy.
     live_hwdec: str = DEFAULT_LIVE_HWDEC
+    # Default off. When True, LIVE_NONE uses nvdec-copy instead of zero-copy nvdec.
+    live_none_force_copy: bool = False
 
     def ffmpeg_path(self) -> Path:
         return Path(self.ffmpeg)
@@ -131,6 +138,7 @@ def load_config() -> AppConfig:
     cfg.animejanai_engine_note = bool(raw.get("animejanai_engine_note", False))
     live_hwdec = _as_str(raw.get("live_hwdec"), DEFAULT_LIVE_HWDEC).strip().lower()
     cfg.live_hwdec = live_hwdec if live_hwdec in LIVE_HWDEC_CHOICES else DEFAULT_LIVE_HWDEC
+    cfg.live_none_force_copy = bool(raw.get("live_none_force_copy", False))
     return cfg
 
 

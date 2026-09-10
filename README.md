@@ -165,15 +165,41 @@ Upstream: [bloc97/Anime4K](https://github.com/bloc97/Anime4K). If a filename on 
 
 ## Play live
 
-Play live is for watts / dropped-frame checks against Chrome and across models. Decode is **NVDEC-copy** (`--hwdec=nvdec-copy`, falling back once to `auto-copy` if NVDEC fails to init) so CPU watts stay close to Chrome; GLSL shaders still get a copy they can hook. Dumps remain `--hwdec=no` and `--vo=lavc` for a deterministic encode.
+Play live is for watts / dropped-frame checks against Chrome and across models. **Decode is split by live mode** (intentional — two different GPU paths). Dumps remain `--hwdec=no` and `--vo=lavc` for a deterministic encode. Live never uses `--untimed`.
+
+The extra GPU copy is a cost of **hooking client shaders**, not of watching the file. A fair no-AI baseline therefore must not pay that copy. Chrome + RTX VSR also stays on a zero-copy video path inside the driver. Comparing NONE+copy to Chrome would still blame mpv for a cost the AI models need and Chrome does not pay when no VSR-equivalent shader is attached.
+
+### `LIVE_NONE` — None — native (no AI)
+
+Zero-copy hardware decode, closest to Chrome:
+
+```
+--hwdec=nvdec
+```
+
+No `-copy`, no `--glsl-shaders`, no AnimeJaNai filter, no `--vf=gpu=w=…:h=…`. `--vo=gpu-next --force-window=yes` and audio stay on. If `nvdec` fails to init, fall back once to `d3d11va` (still no copy), then `auto`. Never fall back to `nvdec-copy` or `hwdec=no` for this preset. The log records which hwdec actually attached.
+
+Log line: `live NONE hwdec=nvdec (no copy, Chrome-like baseline)`.
+
+`LIVE_NONE` is live-only: plain `mpv.exe`, native window scale like a browser. Use it as the watts baseline vs Chrome. It is not a dump catalog token. Unsupported 2× heights are allowed in this mode.
+
+### Catalog AI models (FSRCNNX 16/56/8, Anime4K Fast, AnimeJaNai, …)
+
+Keep the shader-safe copy path:
+
+```
+--hwdec=nvdec-copy
+```
+
+Fallback `auto-copy`. Do not switch these to plain `nvdec`: GLSL / `vf=gpu` / AnimeJaNai need the copy. Catalog models still force 2× (`--vf=gpu=w=…:h=…` for GLSL; AnimeJaNai via the bundle filter + autofit).
+
+Log line: `live TOKEN hwdec=nvdec-copy (copy required for shaders)`.
 
 Select **one** queue file (or the first playable among a multi-selection), pick a **Live model** in the combobox (every catalog token, including Group B even if the dump switch is off), then **Play live**. That opens a visible mpv window using the **same binary and shaders as the dump** — GLSL models via plain `mpv.exe --glsl-shaders=`, AnimeJaNai via the bundle `mpv.exe --config-dir=` (no `--no-config`; CLI `--hwdec=` wins over the bundle). Audio stays on. No MP4, sidecar, or manifest row is written.
 
-**None — native (no AI, hw decode)** (`LIVE_NONE`) is live-only: plain `mpv.exe`, no GLSL, no AnimeJaNai, no `--vf=gpu` 2× lock — mpv scales to the window like a browser. Use it as the watts baseline vs Chrome. It is not a dump catalog token. Unsupported 2× heights are allowed in this mode. Catalog models still force 2× (`--vf=gpu=w=…:h=…` for GLSL; AnimeJaNai via the bundle filter + autofit).
-
 Stop with **Stop live** or by closing the mpv window. A dump batch and live playback cannot share the GPU: Play live is refused while dumps run; Start dumps offers to stop a live window first.
 
-In mpv, **Shift+I** opens the profiler (frame times / shader cost). Settings may persist `live_hwdec` (`nvdec-copy` / `auto-copy` / `no`); dumps ignore that key.
+In mpv, **Shift+I** opens the profiler (frame times / shader cost). Settings may persist `live_hwdec` (`nvdec-copy` / `auto-copy` / `no`) for **AI live sessions only**; dumps ignore that key. `LIVE_NONE` stays locked to `nvdec` (no copy) unless **Force copy on None baseline** is checked (default off).
 
 ## Project layout
 

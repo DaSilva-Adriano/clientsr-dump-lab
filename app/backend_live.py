@@ -1,12 +1,23 @@
 """Windowed live playback using the same mpv binaries and shaders as dumps.
 
 Encode flags (--o, --ovc, --of, --vo=lavc, --untimed, --no-audio, --hwdec=no)
-stay dump-only. Live uses GPU decode (nvdec-copy, shader-safe copy) so CPU
-watts stay close to Chrome; GLSL / vf=gpu still get a texture they can hook.
+stay dump-only.
+
+Live decode is split by mode (intentional — two different GPU paths):
+
+- LIVE_NONE: --hwdec=nvdec (zero-copy, Chrome-like baseline). Fallback d3d11va
+  then auto. Still no copy. No --glsl-shaders, no AnimeJaNai, no --vf=gpu.
+  --vo=gpu-next, --force-window=yes, and audio stay on.
+- Catalog AI models: --hwdec=nvdec-copy so GLSL / vf=gpu / AnimeJaNai can hook
+  the texture. Fallback auto-copy. Do not switch these to plain nvdec.
+
+The extra GPU copy is a cost of hooking client shaders, not of watching the
+file. A fair no-AI baseline must not pay that copy.
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
 import threading
 from collections.abc import Callable
@@ -23,8 +34,11 @@ from app.backend_mpv import (
 from app.catalog import MODELS, ModelSpec
 from app.settings import (
     DEFAULT_LIVE_HWDEC,
+    DEFAULT_LIVE_NONE_HWDEC,
     LIVE_HWDEC_CHOICES,
     LIVE_HWDEC_FALLBACK,
+    LIVE_NONE_HWDEC_FALLBACK,
+    LIVE_NONE_HWDEC_LAST,
     animejanai_portable_config,
     appdata_dir,
     resolve_animejanai_binary,
@@ -48,7 +62,7 @@ GLSL_LIVE_TOKENS = frozenset(m.token for m in MODELS if m.backend == "mpv_glsl")
 TOKEN_LIVE_NONE = "LIVE_NONE"
 LIVE_NONE_LABEL = "None — native (no AI, hw decode)"
 
-# mpv ERR/WARN lines that mean --hwdec=nvdec-copy did not init.
+# mpv ERR/WARN lines that mean the requested --hwdec= did not init.
 _HWDEC_FAIL_MARKERS = (
     "failed to initialize a hardware decoder",
     "failed to initialize nvdec",
@@ -61,7 +75,16 @@ _HWDEC_FAIL_MARKERS = (
     "could not create cuda context",
     "failed to create cuda context",
     "nvdec-copy failed",
+    "nvdec failed",
+    "failed to initialize d3d11va",
+    "could not initialize d3d11va",
+    "d3d11va failed",
     "hwdec failed",
+)
+
+_HWDEC_ATTACHED_RE = re.compile(
+    r"using hardware decoding \(([^)]+)\)",
+    re.IGNORECASE,
 )
 
 
@@ -75,24 +98,68 @@ class LiveLaunch:
     cwd: Path | None
     token: str
     hwdec: str = DEFAULT_LIVE_HWDEC
+    hwdec_fallbacks: list[str] = field(default_factory=list)
+    copy_required: bool = True
     notes: list[str] = field(default_factory=list)
     engine_note: bool = False
     mpvnet_fallback: bool = False
 
+    def hwdec_log_line(self) -> str:
+        """Documented live-mode hwdec line (token + why copy is or is not paid)."""
+        if self.token == TOKEN_LIVE_NONE:
+            if self.copy_required:
+                return (
+                    f"live NONE hwdec={self.hwdec} (copy forced on None baseline)"
+                )
+            return f"live NONE hwdec={self.hwdec} (no copy, Chrome-like baseline)"
+        return f"live {self.token} hwdec={self.hwdec} (copy required for shaders)"
+
 
 def normalize_live_hwdec(value: str | None) -> str:
+    """AI live sessions only. LIVE_NONE does not go through this."""
     raw = (value or DEFAULT_LIVE_HWDEC).strip().lower()
     if raw in LIVE_HWDEC_CHOICES:
         return raw
     return DEFAULT_LIVE_HWDEC
 
 
+def resolve_live_hwdec_plan(
+    *,
+    passthrough: bool,
+    configured: str | None = None,
+    none_force_copy: bool = False,
+) -> tuple[str, list[str], bool]:
+    """Return (hwdec, fallbacks, copy_required).
+
+    LIVE_NONE is locked to nvdec (no copy) unless none_force_copy. Catalog AI
+    models use live_hwdec / nvdec-copy. Fallbacks never mix the two families:
+    NONE goes nvdec → d3d11va → auto (still no copy); AI goes nvdec-copy →
+    auto-copy. Do not fall back NONE to nvdec-copy or hwdec=no.
+    """
+    if passthrough:
+        if none_force_copy:
+            return DEFAULT_LIVE_HWDEC, [LIVE_HWDEC_FALLBACK], True
+        return (
+            DEFAULT_LIVE_NONE_HWDEC,
+            [LIVE_NONE_HWDEC_FALLBACK, LIVE_NONE_HWDEC_LAST],
+            False,
+        )
+    hwdec = normalize_live_hwdec(configured)
+    fallbacks = [LIVE_HWDEC_FALLBACK] if hwdec == DEFAULT_LIVE_HWDEC else []
+    return hwdec, fallbacks, True
+
+
 def live_decode_args(hwdec: str) -> list[str]:
     """GPU decode + presentation flags for every live session.
 
-    nvdec-copy (default): NVDEC on the NVIDIA chip, then a copy into a
-    shader-safe buffer so GLSL and vf=gpu still work. Plain nvdec (zero-copy)
-    often breaks those hooks. Do not pass --untimed on live.
+    Two decode paths (caller chooses hwdec):
+
+    - nvdec (LIVE_NONE): zero-copy, closest to Chrome. No shader hooks.
+    - nvdec-copy (catalog AI): NVDEC then a copy into a shader-safe buffer so
+      GLSL, vf=gpu, and AnimeJaNai can hook the texture. Plain nvdec often
+      breaks those hooks.
+
+    Do not pass --untimed on live.
     """
     return [
         f"--hwdec={hwdec}",
@@ -135,7 +202,22 @@ def cmd_with_hwdec(cmd: list[str], hwdec: str) -> list[str]:
 
 def is_hwdec_init_failure(line: str) -> bool:
     low = line.lower()
-    return any(m in low for m in _HWDEC_FAIL_MARKERS)
+    if any(m in low for m in _HWDEC_FAIL_MARKERS):
+        return True
+    if "using software decoding" in low or "falling back to software decoding" in low:
+        return True
+    return False
+
+
+def parse_attached_hwdec(line: str) -> str | None:
+    """mpv 'Using hardware decoding (X)' / software — the hwdec that actually attached."""
+    m = _HWDEC_ATTACHED_RE.search(line)
+    if m:
+        return m.group(1).strip()
+    low = line.lower()
+    if "using software decoding" in low or "falling back to software decoding" in low:
+        return "no"
+    return None
 
 
 def write_live_conf() -> Path:
@@ -198,7 +280,7 @@ def build_passthrough_live_cmd(
     mpv: Path,
     source: Path,
     *,
-    hwdec: str = DEFAULT_LIVE_HWDEC,
+    hwdec: str = DEFAULT_LIVE_NONE_HWDEC,
 ) -> list[str]:
     """Windowed source playback. No shaders, no vf=gpu, native window scale."""
     return [
@@ -288,10 +370,16 @@ def prepare_passthrough_live(
     source: Path,
     *,
     mpv: Path,
-    hwdec: str = DEFAULT_LIVE_HWDEC,
+    force_copy: bool = False,
 ) -> LiveLaunch:
-    """Build a no-model live argv. Does not spawn. Raises LiveError if not ready."""
-    hwdec = normalize_live_hwdec(hwdec)
+    """Build a no-model live argv. Does not spawn. Raises LiveError if not ready.
+
+    LIVE_NONE is locked to nvdec (no copy) unless force_copy. live_hwdec in
+    config.yaml does not apply here.
+    """
+    hwdec, fallbacks, copy_required = resolve_live_hwdec_plan(
+        passthrough=True, none_force_copy=force_copy
+    )
     err = model_ready_passthrough(mpv)
     if err:
         raise LiveError(err)
@@ -302,6 +390,8 @@ def prepare_passthrough_live(
         cwd=None,
         token=TOKEN_LIVE_NONE,
         hwdec=hwdec,
+        hwdec_fallbacks=list(fallbacks),
+        copy_required=copy_required,
         notes=[
             "LIVE_NONE: no shaders, no AnimeJaNai, no vf=gpu — "
             "native window scale (Chrome-like baseline)"
@@ -319,11 +409,18 @@ def prepare_live(
     shaders_dir: Path,
     animejanai_configured: Path,
     hwdec: str = DEFAULT_LIVE_HWDEC,
+    none_force_copy: bool = False,
 ) -> LiveLaunch:
-    """Build a live argv. Does not spawn. Raises LiveError if not ready."""
-    hwdec = normalize_live_hwdec(hwdec)
+    """Build a live argv. Does not spawn. Raises LiveError if not ready.
+
+    hwdec (live_hwdec) applies to catalog AI models only. LIVE_NONE stays
+    nvdec unless none_force_copy.
+    """
     if spec is None or spec.token == TOKEN_LIVE_NONE:
-        return prepare_passthrough_live(source, mpv=mpv, hwdec=hwdec)
+        return prepare_passthrough_live(source, mpv=mpv, force_copy=none_force_copy)
+    hwdec, fallbacks, copy_required = resolve_live_hwdec_plan(
+        passthrough=False, configured=hwdec
+    )
     err = model_ready_live(spec, mpv, shaders_dir, animejanai_configured)
     if err:
         raise LiveError(err)
@@ -351,6 +448,8 @@ def prepare_live(
             cwd=None,
             token=spec.token,
             hwdec=hwdec,
+            hwdec_fallbacks=list(fallbacks),
+            copy_required=copy_required,
             notes=[f"{spec.token} shaders: " + " → ".join(shader_notes)],
         )
 
@@ -383,6 +482,8 @@ def prepare_live(
             cwd=binary.parent,
             token=spec.token,
             hwdec=hwdec,
+            hwdec_fallbacks=list(fallbacks),
+            copy_required=copy_required,
             notes=notes,
             engine_note=True,
             mpvnet_fallback=mpvnet_fallback,
@@ -451,9 +552,11 @@ __all__ = [
     "model_ready_live",
     "model_ready_passthrough",
     "normalize_live_hwdec",
+    "parse_attached_hwdec",
     "prepare_live",
     "prepare_passthrough_live",
     "resolve_animejanai_live_binary",
+    "resolve_live_hwdec_plan",
     "start_live_process",
     "write_live_conf",
 ]
