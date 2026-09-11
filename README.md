@@ -171,15 +171,18 @@ The extra GPU copy is a cost of **hooking client shaders**, not of watching the 
 
 ### `LIVE_NONE` — None — native (no AI)
 
-Zero-copy hardware decode, closest to Chrome:
+Hardware decode that matches `vo=gpu-next` + D3D11 (what Chrome uses on Windows):
 
 ```
---hwdec=nvdec
+--hwdec=d3d11va
+--gpu-api=d3d11
 ```
 
-No `-copy`, no `--glsl-shaders`, no AnimeJaNai filter, no `--vf=gpu=w=…:h=…`. `--vo=gpu-next --force-window=yes` and audio stay on. If `nvdec` fails to init, fall back once to `d3d11va` (still no copy), then `auto`. Never fall back to `nvdec-copy` or `hwdec=no` for this preset. The log records which hwdec actually attached.
+Do **not** pass `--hwdec=nvdec` on this preset: raw CUDA nvdec often fails silently under gpu-next/d3d11 and mpv stays on software (`${hwdec-current}` = `no`) — that is the high CPU watts. No `-copy` on the first try, no `--glsl-shaders`, no AnimeJaNai filter, no `--vf=gpu=w=…:h=…`, no `--untimed`. `--vo=gpu-next --force-window=yes` and audio stay on. If `d3d11va` fails to init, fall back once to `d3d11va-copy`, then `nvdec-copy`. Never stay on `hwdec=no` without a red log line (`hwdec-current=no`). The log prints the intended `--hwdec=` / `--gpu-api=` after spawn and the decoder that actually attached.
 
-Log line: `live NONE hwdec=nvdec (no copy, Chrome-like baseline)`.
+Log line: `live NONE intended --hwdec=d3d11va --gpu-api=d3d11 (no copy, Chrome-like baseline)`.
+
+In the mpv console, `print-text ${hwdec-current}` must show `d3d11va` for NONE, not `no`.
 
 `LIVE_NONE` is live-only: plain `mpv.exe`, native window scale like a browser. Use it as the watts baseline vs Chrome. It is not a dump catalog token. Unsupported 2× heights are allowed in this mode.
 
@@ -191,15 +194,15 @@ Keep the shader-safe copy path:
 --hwdec=nvdec-copy
 ```
 
-Fallback `auto-copy`. Do not switch these to plain `nvdec`: GLSL / `vf=gpu` / AnimeJaNai need the copy. Catalog models still force 2× (`--vf=gpu=w=…:h=…` for GLSL; AnimeJaNai via the bundle filter + autofit).
+Fallback `d3d11va-copy`. Do not switch these to plain `nvdec`: GLSL / `vf=gpu` / AnimeJaNai need the copy. Catalog models still force 2× (`--vf=gpu=w=…:h=…` for GLSL; AnimeJaNai via the bundle filter + autofit).
 
-Log line: `live TOKEN hwdec=nvdec-copy (copy required for shaders)`.
+Log line: `live TOKEN intended --hwdec=nvdec-copy (copy required for shaders)`.
 
 Select **one** queue file (or the first playable among a multi-selection), pick a **Live model** in the combobox (every catalog token, including Group B even if the dump switch is off), then **Play live**. That opens a visible mpv window using the **same binary and shaders as the dump** — GLSL models via plain `mpv.exe --glsl-shaders=`, AnimeJaNai via the bundle `mpv.exe --config-dir=` (no `--no-config`; CLI `--hwdec=` wins over the bundle). Audio stays on. No MP4, sidecar, or manifest row is written.
 
 Stop with **Stop live** or by closing the mpv window. A dump batch and live playback cannot share the GPU: Play live is refused while dumps run; Start dumps offers to stop a live window first.
 
-In mpv, **Shift+I** opens the profiler (frame times / shader cost). Settings may persist `live_hwdec` (`nvdec-copy` / `auto-copy` / `no`) for **AI live sessions only**; dumps ignore that key. `LIVE_NONE` stays locked to `nvdec` (no copy) unless **Force copy on None baseline** is checked (default off).
+In mpv, **Shift+I** opens the profiler (frame times / shader cost). Settings may persist `live_hwdec` (`nvdec-copy` / `auto-copy` / `no`) for **AI live sessions only**; dumps ignore that key. `LIVE_NONE` stays locked to `d3d11va` + `--gpu-api=d3d11` unless **Force copy on None baseline** is checked (default off).
 
 ## Project layout
 

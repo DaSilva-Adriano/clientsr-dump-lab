@@ -21,12 +21,14 @@ DEFAULT_X265_PRESET = "medium"
 DEFAULT_CRF = 12
 THESIS_CRF = 12
 DEFAULT_LIVE_HWDEC = "nvdec-copy"
-LIVE_HWDEC_FALLBACK = "auto-copy"
+LIVE_HWDEC_FALLBACK = "d3d11va-copy"
 LIVE_HWDEC_CHOICES = ("nvdec-copy", "auto-copy", "no")
-# LIVE_NONE baseline: zero-copy. Not a combo choice. Force-copy checkbox overrides.
-DEFAULT_LIVE_NONE_HWDEC = "nvdec"
-LIVE_NONE_HWDEC_FALLBACK = "d3d11va"
-LIVE_NONE_HWDEC_LAST = "auto"
+# LIVE_NONE: d3d11va matches vo=gpu-next + gpu-api=d3d11 (Chrome on Windows).
+# Raw nvdec (CUDA) often fails silently on that combo and mpv stays on software.
+DEFAULT_LIVE_NONE_HWDEC = "d3d11va"
+DEFAULT_LIVE_NONE_GPU_API = "d3d11"
+LIVE_NONE_HWDEC_FALLBACK = "d3d11va-copy"
+LIVE_NONE_HWDEC_LAST = "nvdec-copy"
 
 
 def appdata_dir() -> Path:
@@ -68,9 +70,9 @@ class AppConfig:
     two_parallel_glsl: bool = False
     animejanai_engine_note: bool = False
     # Catalog AI live only. Dumps ignore this key and always use --hwdec=no.
-    # LIVE_NONE ignores it and stays nvdec (no copy) unless live_none_force_copy.
+    # LIVE_NONE ignores it and stays d3d11va (no copy) unless live_none_force_copy.
     live_hwdec: str = DEFAULT_LIVE_HWDEC
-    # Default off. When True, LIVE_NONE uses nvdec-copy instead of zero-copy nvdec.
+    # Default off. When True, LIVE_NONE uses d3d11va-copy instead of zero-copy d3d11va.
     live_none_force_copy: bool = False
 
     def ffmpeg_path(self) -> Path:

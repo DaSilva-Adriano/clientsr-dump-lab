@@ -23,6 +23,7 @@ from app.backend_live import (
     TOKEN_LIVE_NONE,
     cmd_with_hwdec,
     is_hwdec_init_failure,
+    is_software_hwdec,
     model_ready_live,
     normalize_live_hwdec,
     parse_attached_hwdec,
@@ -268,7 +269,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self.live_hwdec.grid(row=2, column=1, padx=8, pady=(10, 0))
         ctk.CTkLabel(
             opts,
-            text="AI live only (dumps ignore). LIVE_NONE stays nvdec (no copy) unless the box below is checked.",
+            text="AI live only (dumps ignore). LIVE_NONE stays d3d11va + gpu-api=d3d11 (no copy) unless the box below is checked.",
             text_color="#8a8a8a",
             wraplength=420,
             justify="left",
@@ -282,7 +283,7 @@ class SettingsDialog(ctk.CTkToplevel):
         ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0), padx=4)
         ctk.CTkLabel(
             opts,
-            text="Default off. Makes LIVE_NONE use nvdec-copy so the no-AI baseline pays the same GPU copy as shader models.",
+            text="Default off. Makes LIVE_NONE use d3d11va-copy so the no-AI baseline pays the same GPU copy as shader models.",
             text_color="#8a8a8a",
             wraplength=420,
             justify="left",
@@ -413,6 +414,7 @@ class DumpLabApp:
         self._live_allow_hwdec_fallback = False
         self._live_restarting = False
         self._live_logged_attached = False
+        self._live_spawn_id = 0
         self._uiq: queue.Queue = queue.Queue()
 
         root.title(APP_NAME)
@@ -762,7 +764,7 @@ class DumpLabApp:
         self.stop_live_btn.pack(side="left", padx=4)
         ctk.CTkLabel(
             bar,
-            text="None: nvdec (no copy, Chrome-like). AI live: nvdec-copy (shaders need the copy). Dumps: --hwdec=no.",
+            text="None: d3d11va + gpu-api=d3d11 (Chrome-like). AI live: nvdec-copy (shaders need the copy). Dumps: --hwdec=no.",
             text_color="#8a8a8a",
             font=ctk.CTkFont(size=12),
         ).grid(row=3, column=0, columnspan=5, sticky="w", padx=12, pady=(0, 8))
@@ -787,6 +789,7 @@ class DumpLabApp:
         )
         self.log_box = ctk.CTkTextbox(wrap, font=ctk.CTkFont(family="Consolas", size=12))
         self.log_box.grid(row=1, column=0, sticky="nsew", padx=8, pady=8)
+        self.log_box.tag_config("error", foreground="#ff5555")
         self.log_box.configure(state="disabled")
 
     def _build_statusbar(self, root) -> None:
@@ -806,6 +809,15 @@ class DumpLabApp:
         def _() -> None:
             self.log_box.configure(state="normal")
             self.log_box.insert("end", msg + "\n")
+            self.log_box.see("end")
+            self.log_box.configure(state="disabled")
+
+        self.call_ui(_)
+
+    def log_error(self, msg: str) -> None:
+        def _() -> None:
+            self.log_box.configure(state="normal")
+            self.log_box.insert("end", msg + "\n", "error")
             self.log_box.see("end")
             self.log_box.configure(state="disabled")
 
@@ -1442,9 +1454,13 @@ class DumpLabApp:
         self.log(launch.hwdec_log_line())
         self.log(f"mpv live: {format_cmd(launch.cmd)}")
 
+        self._live_spawn_id += 1
+        spawn_id = self._live_spawn_id
         try:
             proc = start_live_process(
-                launch.cmd, cwd=launch.cwd, on_line=self._on_live_mpv_line
+                launch.cmd,
+                cwd=launch.cwd,
+                on_line=lambda line, sid=spawn_id: self._on_live_mpv_line(line, sid),
             )
         except OSError as exc:
             messagebox.showerror(APP_NAME, f"Failed to launch mpv: {exc}")
@@ -1463,8 +1479,13 @@ class DumpLabApp:
         self.prog_label.configure(text=msg)
         self._sync_live_buttons()
         self.root.after(400, self._poll_live)
+        self.root.after(2500, lambda sid=spawn_id: self._warn_if_hwdec_unconfirmed(sid))
 
-    def _on_live_mpv_line(self, line: str) -> None:
+    def _on_live_mpv_line(self, line: str, spawn_id: int | None = None) -> None:
+        if spawn_id is not None and spawn_id != self._live_spawn_id:
+            return
+        if self._live_restarting:
+            return
         if self._live_allow_hwdec_fallback and is_hwdec_init_failure(line):
             self.call_ui(lambda err=line: self._fallback_live_hwdec(err))
             return
@@ -1483,6 +1504,7 @@ class DumpLabApp:
                 "vf_animejanai",
                 "tensorrt",
                 "engine",
+                "hwdec-current",
             )
         ):
             self.log(f"  mpv live: {line}")
@@ -1490,8 +1512,32 @@ class DumpLabApp:
     def _log_attached_hwdec(self, attached: str) -> None:
         if self._live_logged_attached:
             return
+        if is_software_hwdec(attached) and self._live_allow_hwdec_fallback:
+            self._fallback_live_hwdec(f"hwdec-current={attached}")
+            return
         self._live_logged_attached = True
-        self.log(f"live attached hwdec={attached}")
+        requested = self._live_launch.hwdec if self._live_launch is not None else "?"
+        if is_software_hwdec(attached):
+            self.log_error(
+                f"ERROR: live hwdec-current={attached} — software decode "
+                f"(requested --hwdec={requested}). High CPU; this is a bug, not a healthy session."
+            )
+            return
+        self.log(f"live attached hwdec={attached} (hwdec-current={attached})")
+
+    def _warn_if_hwdec_unconfirmed(self, spawn_id: int) -> None:
+        if spawn_id != self._live_spawn_id:
+            return
+        if self._live_logged_attached or self._live_restarting:
+            return
+        if not self._live_is_running():
+            return
+        requested = self._live_launch.hwdec if self._live_launch is not None else "?"
+        self.log_error(
+            "ERROR: live: no hwdec-current report yet — if mpv console "
+            "print-text ${hwdec-current} is no, decode is software (high CPU). "
+            f"Requested --hwdec={requested}"
+        )
 
     def _fallback_live_hwdec(self, error_line: str) -> None:
         if not self._live_allow_hwdec_fallback:
@@ -1499,24 +1545,36 @@ class DumpLabApp:
         launch = self._live_launch
         if launch is None or not launch.hwdec_fallbacks:
             self._live_allow_hwdec_fallback = False
+            if launch is not None:
+                self._log_attached_hwdec("no")
+            else:
+                self.log_error(
+                    f"ERROR: live hwdec-current=no — software decode. {error_line}"
+                )
             return
         failed = launch.hwdec
         next_hwdec = launch.hwdec_fallbacks.pop(0)
         self._live_allow_hwdec_fallback = False
         self._live_restarting = True
         self.log(f"live: {failed} failed to init: {error_line}")
-        self.log(f"live: restarting once with hwdec={next_hwdec}")
+        self.log(f"live: restarting with hwdec={next_hwdec}")
         proc = self.live_proc
         self.live_proc = None
         if proc is not None and proc.poll() is None:
             kill_tree(proc)
         launch.cmd = cmd_with_hwdec(launch.cmd, next_hwdec)
         launch.hwdec = next_hwdec
+        if "copy" in next_hwdec:
+            launch.copy_required = True
         self.log(launch.hwdec_log_line())
         self.log(f"mpv live: {format_cmd(launch.cmd)}")
+        self._live_spawn_id += 1
+        spawn_id = self._live_spawn_id
         try:
             new_proc = start_live_process(
-                launch.cmd, cwd=launch.cwd, on_line=self._on_live_mpv_line
+                launch.cmd,
+                cwd=launch.cwd,
+                on_line=lambda line, sid=spawn_id: self._on_live_mpv_line(line, sid),
             )
         except OSError as exc:
             self._live_restarting = False
@@ -1540,6 +1598,7 @@ class DumpLabApp:
         self.prog_label.configure(text=msg)
         self._sync_live_buttons()
         self.root.after(400, self._poll_live)
+        self.root.after(2500, lambda sid=spawn_id: self._warn_if_hwdec_unconfirmed(sid))
 
     def _poll_live(self) -> None:
         if self._live_restarting:
@@ -1559,6 +1618,7 @@ class DumpLabApp:
             self._live_launch = None
             self._live_allow_hwdec_fallback = False
             self._live_logged_attached = False
+            self._live_spawn_id += 1
             self.log(f"live: mpv window closed" + (f" ({token})" if token else ""))
             self._sync_live_buttons()
             if not self.running:
@@ -1579,6 +1639,7 @@ class DumpLabApp:
         self._live_allow_hwdec_fallback = False
         self._live_logged_attached = False
         self._live_restarting = False
+        self._live_spawn_id += 1
         if proc is not None and proc.poll() is None:
             kill_tree(proc)
             self.log("live: stopped" + (f" ({token})" if token else ""))
