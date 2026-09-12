@@ -66,7 +66,7 @@ Unsupported files are marked red with reason `unsupported source height (2× onl
 
 Never ask a model to do 1.5× or 4× as a native factor. AnimeJaNai and FSRCNNX are native **2×** networks. Anime4K CNN passes are 2×; mpv output size is locked to the 2× target so AutoDownscale does not change the comparison.
 
-Optional **Bicubic to 4K when not 4K** (default **OFF**, main bar + Settings, persisted as `bicubic_to_4k`). Models still dump at native 2×. If that 2× canvas is not already 3840×2160 (typically `360p→720p` → 1280×720), the FFmpeg conform step adds `-vf scale=3840:2160:flags=bicubic`. Already-4K 2× dumps (`1080p→4K`) are left alone. Larger-than-UHD canvases are not downscaled. Filenames stay the same; the sidecar records `bicubic_to_4k` / `bicubic_applied` / `output_wxh`.
+Optional **Bilinear to 4K when not 4K** (default **OFF**, main bar + Settings, persisted as `bilinear_to_4k`). Models still dump at native 2×. If that 2× canvas is not already 3840×2160 (typically `360p→720p` → 1280×720), the FFmpeg conform step adds `-vf scale=3840:2160:flags=bilinear`. Already-4K 2× dumps (`1080p→4K`) are left alone. Larger-than-UHD canvases are not downscaled. Filenames stay the same; the sidecar records `bilinear_to_4k` / `bilinear_applied` / `output_wxh`.
 
 Output frame rate = source frame rate. No interpolation. The FFmpeg conform step restamps the mpv intermediate to the source rate (`-r` on input + output, `-fps_mode cfr`). That is timestamp rewrite only — it does not blend or invent frames. Audio is `-c:a copy` when present; if copy fails, audio is dropped. Audio is never re-encoded as a blocker.
 
@@ -86,7 +86,7 @@ Group **A** (standard) defaults **ON**. Group **B** (anime / drawing) has a mast
 
 Content tag **Live / Animation** is visual + summary only. It does **not** by itself enable Group B — the Group B switch does.
 
-Not implemented (on purpose): NVIDIA RTX VSR, Lanczos, Infuse, MetalFX, Topaz, Real-ESRGAN x4plus, any 1.5× path. Bicubic exists only as the optional post-2× FFmpeg scale to 4K above — it is not a catalog model.
+Not implemented (on purpose): NVIDIA RTX VSR, Lanczos, Infuse, MetalFX, Topaz, Real-ESRGAN x4plus, any 1.5× path. Bilinear exists only as the optional post-2× FFmpeg scale to 4K above — it is not a catalog model.
 
 ## Filename nomenclature
 
@@ -106,7 +106,7 @@ v-beauty-1080p-24fps-ANIMEJANAI_BAL_4080.mp4
 - Existing targets are **skipped** unless **Overwrite existing** is checked.
 - Source files are never overwritten.
 
-Each MP4 gets a sidecar `*.dump.json` (source path, WxH in/out, fps, token, device, backend command, ffmpeg command, UTC start/end, elapsed seconds, output bytes, bicubic_to_4k / bicubic_applied). After a batch, `dump_manifest.csv` is written in the output folder.
+Each MP4 gets a sidecar `*.dump.json` (source path, WxH in/out, fps, token, device, backend command, ffmpeg command, UTC start/end, elapsed seconds, output bytes, bilinear_to_4k / bilinear_applied). After a batch, `dump_manifest.csv` is written in the output folder.
 
 ## Encode pipeline
 
@@ -116,7 +116,7 @@ Each MP4 gets a sidecar `*.dump.json` (source path, WxH in/out, fps, token, devi
 ```
 ffmpeg -y -r <source_fps> -i TMP -i INPUT
   -map 0:v:0 -map 1:a:0?
-  [-vf scale=3840:2160:flags=bicubic]   # only when Bicubic to 4K is on and 2× is not already 4K
+  [-vf scale=3840:2160:flags=bilinear]   # only when Bilinear to 4K is on and 2× is not already 4K
   -c:v libx265 -crf 12 -preset medium -pix_fmt yuv420p -tag:v hvc1
   -c:a copy
   -r <source_fps> -fps_mode cfr
@@ -128,7 +128,7 @@ ffmpeg -y -r <source_fps> -i TMP -i INPUT
 
 CRF **12** is mandatory for the delivered file unless you explicitly **Unlock CRF** in Settings (warning shown). Intermediate CRF 16 is never used as the final quality.
 
-After encode, ffprobe must report the expected canvas (±0) and source fps (tolerance 0.05) or the job fails. Expected canvas is the 2× target, or **3840×2160** when bicubic-to-4K applied. One failure does not abort the queue.
+After encode, ffprobe must report the expected canvas (±0) and source fps (tolerance 0.05) or the job fails. Expected canvas is the 2× target, or **3840×2160** when bilinear-to-4K applied. One failure does not abort the queue.
 
 Cancel kills the current mpv/ffmpeg **process tree** (`CREATE_NEW_PROCESS_GROUP` + `taskkill /PID /T`). Partial tmp files are left on cancel/fail and deleted on success.
 
@@ -165,7 +165,7 @@ Upstream: [bloc97/Anime4K](https://github.com/bloc97/Anime4K). If a filename on 
 - Queue: add files / add folder / drag-and-drop. Columns: file, WxH, fps, duration, class, content tag, status.
 - Group A has three checkboxes, default ON: FSRCNNX 16, FSRCNNX 56 (heavier than 16, RTX 4080 Super only — not the laptop profile), FSRCNNX 8.
 - Content tag default **Live**. Setting rows to **Animation** does not enable Group B.
-- **Bicubic to 4K when not 4K** (default off): after the native 2× dump, FFmpeg bicubic-scales to 3840×2160 when the 2× canvas is smaller. 1080p→4K files are unchanged.
+- **Bilinear to 4K when not 4K** (default off): after the native 2× dump, FFmpeg bilinear-scales to 3840×2160 when the 2× canvas is smaller. 1080p→4K files are unchanged.
 - Dry-run prints the exact mpv + ffmpeg commands and writes no video.
 - Status bar: ffmpeg / mpv / AnimeJaNai / GPU (`nvidia-smi`).
 - FPS other than 24/25/30/50/60 (plus 23.976 / 29.97 / 59.94) warns but still allows.

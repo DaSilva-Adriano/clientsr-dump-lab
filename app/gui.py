@@ -51,7 +51,7 @@ from app.probe import (
     fps_is_standard,
     gpu_name,
     classify_height,
-    needs_bicubic_to_4k,
+    needs_bilinear_to_4k,
     probe_file,
     probe_tools,
 )
@@ -255,15 +255,15 @@ class SettingsDialog(ctk.CTkToplevel):
             variable=self.parallel,
         ).grid(row=1, column=0, columnspan=5, sticky="w", pady=(8, 0), padx=4)
 
-        self.bicubic_4k = ctk.BooleanVar(value=self.cfg.bicubic_to_4k)
+        self.bilinear_4k = ctk.BooleanVar(value=self.cfg.bilinear_to_4k)
         ctk.CTkCheckBox(
             opts,
-            text="Bicubic to 4K when output is not 4K",
-            variable=self.bicubic_4k,
+            text="Bilinear to 4K when output is not 4K",
+            variable=self.bilinear_4k,
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0), padx=4)
         ctk.CTkLabel(
             opts,
-            text="Default off. Native 2× stays. 720p dumps are FFmpeg-scaled to 3840×2160 (flags=bicubic). Already-4K canvases are left alone.",
+            text="Default off. Native 2× stays. 720p dumps are FFmpeg-scaled to 3840×2160 (flags=bilinear). Already-4K canvases are left alone.",
             text_color="#8a8a8a",
             wraplength=420,
             justify="left",
@@ -371,7 +371,7 @@ class SettingsDialog(ctk.CTkToplevel):
             crf=THESIS_CRF,
             crf_unlocked=bool(self.unlock_crf.get()),
             two_parallel_glsl=bool(self.parallel.get()),
-            bicubic_to_4k=bool(self.bicubic_4k.get()),
+            bilinear_to_4k=bool(self.bilinear_4k.get()),
             animejanai_engine_note=self.master_app.cfg.animejanai_engine_note,
             live_hwdec=normalize_live_hwdec(self.live_hwdec.get()),
             live_none_force_copy=bool(self.none_force_copy.get()),
@@ -716,7 +716,7 @@ class DumpLabApp:
 
         self.overwrite = ctk.BooleanVar(value=False)
         self.dry_run = ctk.BooleanVar(value=False)
-        self.bicubic_to_4k = ctk.BooleanVar(value=self.cfg.bicubic_to_4k)
+        self.bilinear_to_4k = ctk.BooleanVar(value=self.cfg.bilinear_to_4k)
         checks = ctk.CTkFrame(bar, fg_color="transparent")
         checks.grid(row=0, column=3, columnspan=2, padx=8, pady=8, sticky="e")
         ctk.CTkCheckBox(checks, text="Overwrite existing", variable=self.overwrite).pack(
@@ -727,9 +727,9 @@ class DumpLabApp:
         )
         ctk.CTkCheckBox(
             checks,
-            text="Bicubic to 4K when not 4K",
-            variable=self.bicubic_to_4k,
-            command=self._on_bicubic_toggle,
+            text="Bilinear to 4K when not 4K",
+            variable=self.bilinear_to_4k,
+            command=self._on_bilinear_toggle,
         ).pack(side="left", padx=6)
 
         self.matrix = ctk.CTkLabel(
@@ -854,7 +854,7 @@ class DumpLabApp:
         self.cfg = cfg
         self.out_entry.delete(0, "end")
         self.out_entry.insert(0, cfg.output_dir)
-        self.bicubic_to_4k.set(bool(cfg.bicubic_to_4k))
+        self.bilinear_to_4k.set(bool(cfg.bilinear_to_4k))
         self._refresh_queue_paint()
         self._refresh_tools()
         self._refresh_model_readiness()
@@ -866,11 +866,11 @@ class DumpLabApp:
 
     def _persist_output(self) -> None:
         self.cfg.output_dir = self.out_entry.get().strip() or self.cfg.output_dir
-        self.cfg.bicubic_to_4k = bool(self.bicubic_to_4k.get())
+        self.cfg.bilinear_to_4k = bool(self.bilinear_to_4k.get())
         save_config(self.cfg)
 
-    def _on_bicubic_toggle(self) -> None:
-        self.cfg.bicubic_to_4k = bool(self.bicubic_to_4k.get())
+    def _on_bilinear_toggle(self) -> None:
+        self.cfg.bilinear_to_4k = bool(self.bilinear_to_4k.get())
         save_config(self.cfg)
         self._refresh_queue_paint()
 
@@ -1062,7 +1062,7 @@ class DumpLabApp:
         cls = item.height_class
         if item.force_target:
             cls = f"{item.force_target} (forced)"
-        if bool(self.bicubic_to_4k.get()) and needs_bicubic_to_4k(
+        if bool(self.bilinear_to_4k.get()) and needs_bilinear_to_4k(
             item.target_w, item.target_h
         ):
             cls = f"{cls} → 4K"
@@ -1221,15 +1221,15 @@ class DumpLabApp:
             f"Starting {len(jobs)} dumps  ·  CRF {self.cfg.effective_crf()}  "
             f"preset {self.cfg.x265_preset}  ·  {'DRY-RUN' if dry else 'encode'}"
         )
-        if bool(self.bicubic_to_4k.get()):
+        if bool(self.bilinear_to_4k.get()):
             n_up = sum(
                 1
                 for i in eligible
-                if needs_bicubic_to_4k(i.target_w, i.target_h)
+                if needs_bilinear_to_4k(i.target_w, i.target_h)
             )
             self.log(
-                f"Bicubic to 4K: ON — {n_up}/{len(eligible)} file(s) will be "
-                "FFmpeg-scaled 2×→3840×2160 (flags=bicubic); already-4K skipped"
+                f"Bilinear to 4K: ON — {n_up}/{len(eligible)} file(s) will be "
+                "FFmpeg-scaled 2×→3840×2160 (flags=bilinear); already-4K skipped"
             )
         self.log(job_matrix_text(eligible, models))
         self.running = True

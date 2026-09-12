@@ -32,7 +32,7 @@ UNSUPPORTED_REASON = "unsupported source height (2× only: 360p or 1080p)"
 # Nominal 2× canvases used by the force-override dropdown (16:9 thesis sizes).
 FORCE_720P = (1280, 720)
 FORCE_2160P = (3840, 2160)
-UHD_4K = FORCE_2160P  # 3840×2160 — optional post-2× bicubic target
+UHD_4K = FORCE_2160P  # 3840×2160 — optional post-2× bilinear target
 
 STANDARD_FPS = (24.0, 25.0, 30.0, 50.0, 60.0)
 STANDARD_FPS_NEAR = (23.976, 24.0, 25.0, 29.97, 30.0, 50.0, 59.94, 60.0)
@@ -146,8 +146,8 @@ def is_uhd_4k(width: int | None, height: int | None) -> bool:
     return width == UHD_4K[0] and height == UHD_4K[1]
 
 
-def needs_bicubic_to_4k(width: int | None, height: int | None) -> bool:
-    """True when a 2× canvas should be FFmpeg-bicubic-scaled to 3840×2160.
+def needs_bilinear_to_4k(width: int | None, height: int | None) -> bool:
+    """True when a 2× canvas should be FFmpeg-bilinear-scaled to 3840×2160.
 
     Only enlarges. Already-4K canvases are left alone. Anything larger than
     UHD in either dimension is not downscaled.
@@ -165,12 +165,12 @@ def expected_output_size(
     target_w: int | None,
     target_h: int | None,
     *,
-    bicubic_to_4k: bool,
+    bilinear_to_4k: bool,
 ) -> tuple[int, int]:
-    """Delivered MP4 canvas: native 2×, or UHD if bicubic-to-4K applies."""
+    """Delivered MP4 canvas: native 2×, or UHD if bilinear-to-4K applies."""
     tw = int(target_w or 0)
     th = int(target_h or 0)
-    if bicubic_to_4k and needs_bicubic_to_4k(tw, th):
+    if bilinear_to_4k and needs_bilinear_to_4k(tw, th):
         return UHD_4K
     return tw, th
 

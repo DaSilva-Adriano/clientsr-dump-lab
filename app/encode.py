@@ -76,9 +76,9 @@ def output_fps_rate(fps_str: str = "", fps: float = 0.0) -> str | None:
     return None
 
 
-def bicubic_scale_filter(width: int, height: int) -> str:
-    """libswscale bicubic to an exact canvas. Not a neural upscaler."""
-    return f"scale={int(width)}:{int(height)}:flags=bicubic"
+def bilinear_scale_filter(width: int, height: int) -> str:
+    """libswscale bilinear to an exact canvas. Not a neural upscaler."""
+    return f"scale={int(width)}:{int(height)}:flags=bilinear"
 
 
 def build_ffmpeg_cmd(
@@ -123,7 +123,7 @@ def build_ffmpeg_cmd(
     if scale_to is not None:
         sw, sh = int(scale_to[0]), int(scale_to[1])
         if sw > 0 and sh > 0:
-            cmd += ["-vf", bicubic_scale_filter(sw, sh)]
+            cmd += ["-vf", bilinear_scale_filter(sw, sh)]
     cmd += [
         "-c:v",
         "libx265",
@@ -203,7 +203,7 @@ def encode_mp4(
             if scale_to is not None:
                 sw, sh = int(scale_to[0]), int(scale_to[1])
                 log(
-                    f"ffmpeg ({label}): bicubic scale → {sw}x{sh} "
+                    f"ffmpeg ({label}): bilinear scale → {sw}x{sh} "
                     "(output was not 4K; native 2× unchanged)"
                 )
             log(f"ffmpeg ({label}): {format_cmd(cmd)}")

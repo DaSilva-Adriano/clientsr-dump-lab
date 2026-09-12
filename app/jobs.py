@@ -27,7 +27,7 @@ from app.probe import (
     UHD_4K,
     expected_output_size,
     fps_matches,
-    needs_bicubic_to_4k,
+    needs_bilinear_to_4k,
     probe_file,
 )
 from app.settings import AppConfig, tmp_dir
@@ -75,7 +75,7 @@ class JobResult:
     output_bytes: int = 0
     output_w: int = 0
     output_h: int = 0
-    bicubic_applied: bool = False
+    bilinear_applied: bool = False
     backend_cmd: list[str] = field(default_factory=list)
     ffmpeg_cmd: list[str] = field(default_factory=list)
     start_utc: str = ""
@@ -165,8 +165,8 @@ def _write_sidecar(result: JobResult, cfg: AppConfig) -> None:
             if result.output_w and result.output_h
             else f"{item.target_w}x{item.target_h}"
         ),
-        "bicubic_to_4k": bool(cfg.bicubic_to_4k),
-        "bicubic_applied": bool(result.bicubic_applied),
+        "bilinear_to_4k": bool(cfg.bilinear_to_4k),
+        "bilinear_applied": bool(result.bilinear_applied),
         "fps": item.fps,
         "fps_str": item.fps_str,
         "token": job.model.token,
@@ -274,10 +274,10 @@ class BatchRunner:
 
     def _scale_to(self, item: QueueItem) -> tuple[int, int] | None:
         """UHD canvas for the FFmpeg conform step, or None to keep native 2×."""
-        if not self.cfg.bicubic_to_4k:
+        if not self.cfg.bilinear_to_4k:
             return None
         tw, th = int(item.target_w or 0), int(item.target_h or 0)
-        if needs_bicubic_to_4k(tw, th):
+        if needs_bilinear_to_4k(tw, th):
             return UHD_4K
         return None
 
@@ -331,9 +331,9 @@ class BatchRunner:
                 raise BackendError("cancelled")
 
             scale_to = self._scale_to(job.item)
-            result.bicubic_applied = scale_to is not None
-            if self.cfg.bicubic_to_4k and scale_to is None:
-                log("bicubic to 4K: skipped (2× canvas is already 4K or larger)")
+            result.bilinear_applied = scale_to is not None
+            if self.cfg.bilinear_to_4k and scale_to is None:
+                log("bilinear to 4K: skipped (2× canvas is already 4K or larger)")
             ffmpeg_cmd = encode_mp4(
                 self.cfg.ffmpeg_path(),
                 tmp,
@@ -359,12 +359,12 @@ class BatchRunner:
             expect_w, expect_h = expected_output_size(
                 job.item.target_w,
                 job.item.target_h,
-                bicubic_to_4k=self.cfg.bicubic_to_4k,
+                bilinear_to_4k=self.cfg.bilinear_to_4k,
             )
             if out_h != expect_h or out_w != expect_w:
                 if scale_to is not None:
                     raise EncodeError(
-                        f"output {out_w}x{out_h} is not the bicubic 4K target "
+                        f"output {out_w}x{out_h} is not the bilinear 4K target "
                         f"{expect_w}x{expect_h} (native 2× was "
                         f"{job.item.target_w}x{job.item.target_h})"
                     )
@@ -464,11 +464,11 @@ class BatchRunner:
         scale_to = self._scale_to(item)
         if scale_to is not None:
             log(
-                f"bicubic to 4K: {tw}x{th} → {scale_to[0]}x{scale_to[1]} "
-                "(FFmpeg scale flags=bicubic; native 2× unchanged)"
+                f"bilinear to 4K: {tw}x{th} → {scale_to[0]}x{scale_to[1]} "
+                "(FFmpeg scale flags=bilinear; native 2× unchanged)"
             )
-        elif self.cfg.bicubic_to_4k:
-            log("bicubic to 4K: skipped (2× canvas is already 4K or larger)")
+        elif self.cfg.bilinear_to_4k:
+            log("bilinear to 4K: skipped (2× canvas is already 4K or larger)")
         ff = build_ffmpeg_cmd(
             self.cfg.ffmpeg_path(),
             tmp,
