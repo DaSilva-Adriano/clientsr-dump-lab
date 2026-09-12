@@ -66,7 +66,7 @@ Unsupported files are marked red with reason `unsupported source height (2× onl
 
 Never ask a model to do 1.5× or 4× as a native factor. AnimeJaNai and FSRCNNX are native **2×** networks. Anime4K CNN passes are 2×; mpv output size is locked to the 2× target so AutoDownscale does not change the comparison.
 
-Output frame rate = source frame rate. No interpolation. Audio is `-c:a copy` when present; if copy fails, audio is dropped. Audio is never re-encoded as a blocker.
+Output frame rate = source frame rate. No interpolation. The FFmpeg conform step restamps the mpv intermediate to the source rate (`-r` on input + output, `-fps_mode cfr`). That is timestamp rewrite only — it does not blend or invent frames. Audio is `-c:a copy` when present; if copy fails, audio is dropped. Audio is never re-encoded as a blocker.
 
 ## Token table
 
@@ -112,17 +112,20 @@ Each MP4 gets a sidecar `*.dump.json` (source path, WxH in/out, fps, token, devi
 2. **Conform** with the thesis FFmpeg to MP4:
 
 ```
-ffmpeg -y -i TMP -i INPUT
+ffmpeg -y -r <source_fps> -i TMP -i INPUT
   -map 0:v:0 -map 1:a:0?
   -c:v libx265 -crf 12 -preset medium -pix_fmt yuv420p -tag:v hvc1
   -c:a copy
+  -r <source_fps> -fps_mode cfr
   -movflags +faststart
   OUTPUT.mp4
 ```
 
+`<source_fps>` is the probed `r_frame_rate` fraction (e.g. `24/1`). mpv 0.41 dropped `--ofps`, and `vf=gpu` on heavy 4K shader dumps can stretch timestamps (24.0000 → 23.8333) even when the frame count matches the source. Input `-r` ignores those timestamps and assigns source-rate PTS in decode order.
+
 CRF **12** is mandatory for the delivered file unless you explicitly **Unlock CRF** in Settings (warning shown). Intermediate CRF 16 is never used as the final quality.
 
-After encode, ffprobe must report the exact 2× height/width (±0) or the job fails. One failure does not abort the queue.
+After encode, ffprobe must report the exact 2× height/width (±0) and source fps (tolerance 0.05) or the job fails. One failure does not abort the queue.
 
 Cancel kills the current mpv/ffmpeg **process tree** (`CREATE_NEW_PROCESS_GROUP` + `taskkill /PID /T`). Partial tmp files are left on cancel/fail and deleted on success.
 

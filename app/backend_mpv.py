@@ -171,7 +171,9 @@ def build_mpv_glsl_cmd(
         "--vo=lavc",
         "--hwdec=no",
         "--untimed",
+        "--video-sync=desync",
         "--framedrop=no",
+        "--hr-seek-framedrop=no",
         f"--glsl-shaders={glsl_shaders_arg(shaders)}",
         f"--vf=gpu=w={target_w}:h={target_h}",
         f"--o={tmp_mkv}",
@@ -179,7 +181,9 @@ def build_mpv_glsl_cmd(
         "--ovc=libx264",
         "--ovcopts=crf=16,preset=fast",
     ]
-    # --ofps/--oautofps were removed from mpv 0.41 encoding; timestamps follow the source.
+    # --ofps/--oautofps were removed from mpv 0.41 encoding. vf=gpu on heavy
+    # 4K shader dumps can stretch timestamps (24/1 → 143/6) even when every
+    # frame is present; ffmpeg conform locks CFR to fps_str.
     cmd.append(str(source))
     return cmd
 

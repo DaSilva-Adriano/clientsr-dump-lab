@@ -23,7 +23,7 @@ from app.catalog import ModelSpec
 from app.encode import EncodeError, encode_mp4
 from app.manifest import ManifestRow
 from app.naming import assert_not_source, output_path, sidecar_path
-from app.probe import probe_output_height
+from app.probe import fps_matches, probe_file
 from app.settings import AppConfig, tmp_dir
 
 LogCb = Callable[[str], None]
@@ -314,17 +314,29 @@ class BatchRunner:
                 preset=self.cfg.x265_preset,
                 has_audio=job.item.has_audio,
                 duration=job.item.duration,
+                fps_str=job.item.fps_str,
+                fps=job.item.fps,
                 cancel_event=self.cancel_event,
                 log=log,
                 progress=prog,
             )
             result.ffmpeg_cmd = ffmpeg_cmd
 
-            out_w, out_h = probe_output_height(self.cfg.ffprobe_path(), job.dest)
+            probed = probe_file(self.cfg.ffprobe_path(), job.dest)
+            if probed.error:
+                raise EncodeError(probed.error)
+            out_w, out_h = probed.width, probed.height
             if out_h != job.item.target_h or out_w != job.item.target_w:
                 raise EncodeError(
                     f"output {out_w}x{out_h} is not the 2× target "
                     f"{job.item.target_w}x{job.item.target_h}"
+                )
+            if not fps_matches(probed.fps, job.item.fps):
+                src = job.item.fps_str or f"{job.item.fps:.4f}"
+                got = probed.fps_str or f"{probed.fps:.4f}"
+                raise EncodeError(
+                    f"output fps {got} differs from source {src} "
+                    f"(tolerance 0.05). Clips must already be aligned."
                 )
 
             result.status = "ok"
@@ -334,7 +346,10 @@ class BatchRunner:
             _write_sidecar(result, self.cfg)
             self._store(result)
             self._notify(job, "ok")
-            log(f"ok {out_w}x{out_h} in {result.elapsed:.1f}s → {job.dest.name}")
+            log(
+                f"ok {out_w}x{out_h} {probed.fps_str or probed.fps}fps "
+                f"in {result.elapsed:.1f}s → {job.dest.name}"
+            )
             self.progress(index, total, token, "done", 100.0)
         except Exception as exc:
             if self.cancel_event.is_set() or str(exc).lower() == "cancelled":
@@ -411,6 +426,8 @@ class BatchRunner:
             crf=self.cfg.effective_crf(),
             preset=self.cfg.x265_preset,
             map_audio=item.has_audio,
+            fps_str=item.fps_str,
+            fps=item.fps,
         )
         from app.winproc import format_cmd
 

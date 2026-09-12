@@ -35,6 +35,8 @@ FORCE_2160P = (3840, 2160)
 
 STANDARD_FPS = (24.0, 25.0, 30.0, 50.0, 60.0)
 STANDARD_FPS_NEAR = (23.976, 24.0, 25.0, 29.97, 30.0, 50.0, 59.94, 60.0)
+# Same tolerance the thesis eval host uses for ref vs dist alignment.
+FPS_MATCH_TOLERANCE = 0.05
 
 
 @dataclass
@@ -93,6 +95,20 @@ def fps_is_standard(fps: float) -> bool:
         if abs(fps - ref) < 0.08:
             return True
     return False
+
+
+def fps_matches(
+    actual: float,
+    expected: float,
+    *,
+    tol: float = FPS_MATCH_TOLERANCE,
+) -> bool:
+    """True when output fps matches the source (or there is no source rate to check)."""
+    if expected <= 0:
+        return True
+    if actual <= 0:
+        return False
+    return abs(actual - expected) <= tol
 
 
 def classify_height(

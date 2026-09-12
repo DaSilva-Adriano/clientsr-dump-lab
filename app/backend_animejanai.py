@@ -94,7 +94,9 @@ def build_animejanai_cmd(
         # portable_config sets vo=gpu-next; encoding must use lavc or the VO window fails.
         "--vo=lavc",
         "--untimed",
+        "--video-sync=desync",
         "--framedrop=no",
+        "--hr-seek-framedrop=no",
         "--save-position-on-quit=no",
         f"--vf-add=gpu=w={target_w}:h={target_h}",
         f"--o={tmp_mkv}",
@@ -102,7 +104,8 @@ def build_animejanai_cmd(
         "--ovc=libx264",
         "--ovcopts=crf=16,preset=fast",
     ]
-    # --ofps/--oautofps were removed from mpv 0.41 encoding; timestamps follow the source.
+    # --ofps/--oautofps were removed from mpv 0.41 encoding. ffmpeg conform
+    # locks CFR to fps_str (vf=gpu can stretch timestamps on heavy dumps).
     cmd.append(str(source))
     return cmd
 

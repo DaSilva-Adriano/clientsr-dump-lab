@@ -1,4 +1,4 @@
-"""Thesis FFmpeg conform: libx265 CRF 12 MP4, audio copy, no frame interpolation."""
+"""Thesis FFmpeg conform: libx265 CRF 12 MP4, source fps CFR, audio copy, no interpolation."""
 
 from __future__ import annotations
 
@@ -48,6 +48,34 @@ def _out_time_seconds(fields: dict[str, str]) -> float | None:
     return None
 
 
+def output_fps_rate(fps_str: str = "", fps: float = 0.0) -> str | None:
+    """Return an ffmpeg ``-r`` value from source probe data, or None if unknown.
+
+    Prefer the exact ``r_frame_rate`` fraction (``24/1``, ``24000/1001``). Never
+    invent a rate — callers skip CFR lock when this returns None.
+    """
+    s = (fps_str or "").strip()
+    if s and s not in {"0/0", "N/A", "nan"}:
+        if "/" in s:
+            a, b = s.split("/", 1)
+            try:
+                if int(a) > 0 and int(b) > 0:
+                    return s
+            except ValueError:
+                pass
+        else:
+            try:
+                if float(s) > 0:
+                    return s
+            except ValueError:
+                pass
+    if fps > 0:
+        if abs(fps - round(fps)) < 0.011:
+            return f"{int(round(fps))}/1"
+        return f"{fps:.6f}".rstrip("0").rstrip(".")
+    return None
+
+
 def build_ffmpeg_cmd(
     ffmpeg: Path,
     intermediate: Path,
@@ -57,7 +85,10 @@ def build_ffmpeg_cmd(
     crf: int,
     preset: str,
     map_audio: bool,
+    fps_str: str = "",
+    fps: float = 0.0,
 ) -> list[str]:
+    rate = output_fps_rate(fps_str, fps)
     cmd = [
         str(ffmpeg),
         "-y",
@@ -65,6 +96,13 @@ def build_ffmpeg_cmd(
         "-nostats",
         "-progress",
         "pipe:1",
+    ]
+    # Input -r ignores mpv intermediate timestamps and assigns source-rate PTS
+    # in decode order. vf=gpu on heavy 4K dumps can stretch 24/1 → 143/6
+    # without dropping frames; restamping is not interpolation.
+    if rate:
+        cmd += ["-r", rate]
+    cmd += [
         "-i",
         str(intermediate),
         "-i",
@@ -87,6 +125,10 @@ def build_ffmpeg_cmd(
         "yuv420p",
         "-tag:v",
         "hvc1",
+    ]
+    if rate:
+        cmd += ["-r", rate, "-fps_mode", "cfr"]
+    cmd += [
         "-movflags",
         "+faststart",
         str(dest),
@@ -104,6 +146,8 @@ def encode_mp4(
     preset: str,
     has_audio: bool,
     duration: float = 0.0,
+    fps_str: str = "",
+    fps: float = 0.0,
     cancel_event: threading.Event | None = None,
     log: LogCb | None = None,
     progress: ProgressCb | None = None,
@@ -111,6 +155,7 @@ def encode_mp4(
     """Encode the intermediate with thesis FFmpeg. Returns the command that succeeded.
 
     CRF on the delivered file is 12 unless the operator unlocked it.
+    Output frame rate is locked to the source rate (CFR restamp, no interpolation).
     If audio copy fails, retry video-only. Never re-encode audio as a blocker.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -136,8 +181,13 @@ def encode_mp4(
             crf=crf,
             preset=preset,
             map_audio=map_audio,
+            fps_str=fps_str,
+            fps=fps,
         )
         if log:
+            rate = output_fps_rate(fps_str, fps)
+            if rate:
+                log(f"ffmpeg ({label}): locking fps {rate} (source CFR, no interpolation)")
             log(f"ffmpeg ({label}): {format_cmd(cmd)}")
 
         acc: dict[str, str] = {}
