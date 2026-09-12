@@ -76,6 +76,11 @@ def output_fps_rate(fps_str: str = "", fps: float = 0.0) -> str | None:
     return None
 
 
+def bicubic_scale_filter(width: int, height: int) -> str:
+    """libswscale bicubic to an exact canvas. Not a neural upscaler."""
+    return f"scale={int(width)}:{int(height)}:flags=bicubic"
+
+
 def build_ffmpeg_cmd(
     ffmpeg: Path,
     intermediate: Path,
@@ -87,6 +92,7 @@ def build_ffmpeg_cmd(
     map_audio: bool,
     fps_str: str = "",
     fps: float = 0.0,
+    scale_to: tuple[int, int] | None = None,
 ) -> list[str]:
     rate = output_fps_rate(fps_str, fps)
     cmd = [
@@ -114,6 +120,10 @@ def build_ffmpeg_cmd(
         cmd += ["-map", "1:a:0?", "-c:a", "copy"]
     else:
         cmd += ["-an"]
+    if scale_to is not None:
+        sw, sh = int(scale_to[0]), int(scale_to[1])
+        if sw > 0 and sh > 0:
+            cmd += ["-vf", bicubic_scale_filter(sw, sh)]
     cmd += [
         "-c:v",
         "libx265",
@@ -148,6 +158,7 @@ def encode_mp4(
     duration: float = 0.0,
     fps_str: str = "",
     fps: float = 0.0,
+    scale_to: tuple[int, int] | None = None,
     cancel_event: threading.Event | None = None,
     log: LogCb | None = None,
     progress: ProgressCb | None = None,
@@ -183,11 +194,18 @@ def encode_mp4(
             map_audio=map_audio,
             fps_str=fps_str,
             fps=fps,
+            scale_to=scale_to,
         )
         if log:
             rate = output_fps_rate(fps_str, fps)
             if rate:
                 log(f"ffmpeg ({label}): locking fps {rate} (source CFR, no interpolation)")
+            if scale_to is not None:
+                sw, sh = int(scale_to[0]), int(scale_to[1])
+                log(
+                    f"ffmpeg ({label}): bicubic scale → {sw}x{sh} "
+                    "(output was not 4K; native 2× unchanged)"
+                )
             log(f"ffmpeg ({label}): {format_cmd(cmd)}")
 
         acc: dict[str, str] = {}

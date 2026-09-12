@@ -23,7 +23,13 @@ from app.catalog import ModelSpec
 from app.encode import EncodeError, encode_mp4
 from app.manifest import ManifestRow
 from app.naming import assert_not_source, output_path, sidecar_path
-from app.probe import fps_matches, probe_file
+from app.probe import (
+    UHD_4K,
+    expected_output_size,
+    fps_matches,
+    needs_bicubic_to_4k,
+    probe_file,
+)
 from app.settings import AppConfig, tmp_dir
 
 LogCb = Callable[[str], None]
@@ -67,6 +73,9 @@ class JobResult:
     error: str = ""
     elapsed: float = 0.0
     output_bytes: int = 0
+    output_w: int = 0
+    output_h: int = 0
+    bicubic_applied: bool = False
     backend_cmd: list[str] = field(default_factory=list)
     ffmpeg_cmd: list[str] = field(default_factory=list)
     start_utc: str = ""
@@ -151,6 +160,13 @@ def _write_sidecar(result: JobResult, cfg: AppConfig) -> None:
         "source_path": str(item.path),
         "source_wxh": f"{item.width}x{item.height}",
         "target_wxh": f"{item.target_w}x{item.target_h}",
+        "output_wxh": (
+            f"{result.output_w}x{result.output_h}"
+            if result.output_w and result.output_h
+            else f"{item.target_w}x{item.target_h}"
+        ),
+        "bicubic_to_4k": bool(cfg.bicubic_to_4k),
+        "bicubic_applied": bool(result.bicubic_applied),
         "fps": item.fps,
         "fps_str": item.fps_str,
         "token": job.model.token,
@@ -256,6 +272,15 @@ class BatchRunner:
         with self._lock:
             self.results.append(result)
 
+    def _scale_to(self, item: QueueItem) -> tuple[int, int] | None:
+        """UHD canvas for the FFmpeg conform step, or None to keep native 2×."""
+        if not self.cfg.bicubic_to_4k:
+            return None
+        tw, th = int(item.target_w or 0), int(item.target_h or 0)
+        if needs_bicubic_to_4k(tw, th):
+            return UHD_4K
+        return None
+
     def _notify(self, job: DumpJob, status: str, error: str = "") -> None:
         if self.job_status:
             ident = job.item.iid or str(job.item.path)
@@ -305,6 +330,10 @@ class BatchRunner:
             if self.cancel_event.is_set():
                 raise BackendError("cancelled")
 
+            scale_to = self._scale_to(job.item)
+            result.bicubic_applied = scale_to is not None
+            if self.cfg.bicubic_to_4k and scale_to is None:
+                log("bicubic to 4K: skipped (2× canvas is already 4K or larger)")
             ffmpeg_cmd = encode_mp4(
                 self.cfg.ffmpeg_path(),
                 tmp,
@@ -316,6 +345,7 @@ class BatchRunner:
                 duration=job.item.duration,
                 fps_str=job.item.fps_str,
                 fps=job.item.fps,
+                scale_to=scale_to,
                 cancel_event=self.cancel_event,
                 log=log,
                 progress=prog,
@@ -326,11 +356,24 @@ class BatchRunner:
             if probed.error:
                 raise EncodeError(probed.error)
             out_w, out_h = probed.width, probed.height
-            if out_h != job.item.target_h or out_w != job.item.target_w:
+            expect_w, expect_h = expected_output_size(
+                job.item.target_w,
+                job.item.target_h,
+                bicubic_to_4k=self.cfg.bicubic_to_4k,
+            )
+            if out_h != expect_h or out_w != expect_w:
+                if scale_to is not None:
+                    raise EncodeError(
+                        f"output {out_w}x{out_h} is not the bicubic 4K target "
+                        f"{expect_w}x{expect_h} (native 2× was "
+                        f"{job.item.target_w}x{job.item.target_h})"
+                    )
                 raise EncodeError(
                     f"output {out_w}x{out_h} is not the 2× target "
                     f"{job.item.target_w}x{job.item.target_h}"
                 )
+            result.output_w = out_w
+            result.output_h = out_h
             if not fps_matches(probed.fps, job.item.fps):
                 src = job.item.fps_str or f"{job.item.fps:.4f}"
                 got = probed.fps_str or f"{probed.fps:.4f}"
@@ -418,6 +461,14 @@ class BatchRunner:
             )
             log(ENGINE_NOTE)
             log("mpv (dry-run, not executed): " + " ".join(f'"{c}"' if " " in c else c for c in cmd))
+        scale_to = self._scale_to(item)
+        if scale_to is not None:
+            log(
+                f"bicubic to 4K: {tw}x{th} → {scale_to[0]}x{scale_to[1]} "
+                "(FFmpeg scale flags=bicubic; native 2× unchanged)"
+            )
+        elif self.cfg.bicubic_to_4k:
+            log("bicubic to 4K: skipped (2× canvas is already 4K or larger)")
         ff = build_ffmpeg_cmd(
             self.cfg.ffmpeg_path(),
             tmp,
@@ -428,6 +479,7 @@ class BatchRunner:
             map_audio=item.has_audio,
             fps_str=item.fps_str,
             fps=item.fps,
+            scale_to=scale_to,
         )
         from app.winproc import format_cmd
 
@@ -480,11 +532,12 @@ def results_to_manifest(results: list[JobResult]) -> list[ManifestRow]:
     rows: list[ManifestRow] = []
     for r in results:
         item = r.job.item
-        wxh_out = (
-            f"{item.target_w}x{item.target_h}"
-            if item.target_w and item.target_h
-            else ""
-        )
+        if r.output_w and r.output_h:
+            wxh_out = f"{r.output_w}x{r.output_h}"
+        elif item.target_w and item.target_h:
+            wxh_out = f"{item.target_w}x{item.target_h}"
+        else:
+            wxh_out = ""
         rows.append(
             ManifestRow(
                 source=str(item.path),

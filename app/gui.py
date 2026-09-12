@@ -51,6 +51,7 @@ from app.probe import (
     fps_is_standard,
     gpu_name,
     classify_height,
+    needs_bicubic_to_4k,
     probe_file,
     probe_tools,
 )
@@ -185,8 +186,8 @@ class SettingsDialog(ctk.CTkToplevel):
         super().__init__(master.root)
         self.master_app = master
         self.title("Settings — ClientSR Dump Lab")
-        self.geometry("820x760")
-        self.minsize(720, 640)
+        self.geometry("820x820")
+        self.minsize(720, 700)
         self.transient(master.root)
         self.grab_set()
         self.cfg = master.cfg
@@ -254,8 +255,22 @@ class SettingsDialog(ctk.CTkToplevel):
             variable=self.parallel,
         ).grid(row=1, column=0, columnspan=5, sticky="w", pady=(8, 0), padx=4)
 
+        self.bicubic_4k = ctk.BooleanVar(value=self.cfg.bicubic_to_4k)
+        ctk.CTkCheckBox(
+            opts,
+            text="Bicubic to 4K when output is not 4K",
+            variable=self.bicubic_4k,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0), padx=4)
+        ctk.CTkLabel(
+            opts,
+            text="Default off. Native 2× stays. 720p dumps are FFmpeg-scaled to 3840×2160 (flags=bicubic). Already-4K canvases are left alone.",
+            text_color="#8a8a8a",
+            wraplength=420,
+            justify="left",
+        ).grid(row=2, column=2, columnspan=3, sticky="w", padx=8, pady=(8, 0))
+
         ctk.CTkLabel(opts, text="Live hwdec").grid(
-            row=2, column=0, sticky="w", padx=4, pady=(10, 0)
+            row=3, column=0, sticky="w", padx=4, pady=(10, 0)
         )
         self.live_hwdec = ctk.CTkComboBox(
             opts, values=list(LIVE_HWDEC_CHOICES), width=140
@@ -266,28 +281,28 @@ class SettingsDialog(ctk.CTkToplevel):
             else DEFAULT_LIVE_HWDEC
         )
         self.live_hwdec.set(current_hwdec)
-        self.live_hwdec.grid(row=2, column=1, padx=8, pady=(10, 0))
+        self.live_hwdec.grid(row=3, column=1, padx=8, pady=(10, 0))
         ctk.CTkLabel(
             opts,
             text="AI live only (dumps ignore). LIVE_NONE stays d3d11va + gpu-api=d3d11 (no copy) unless the box below is checked.",
             text_color="#8a8a8a",
             wraplength=420,
             justify="left",
-        ).grid(row=2, column=2, columnspan=3, sticky="w", padx=8, pady=(10, 0))
+        ).grid(row=3, column=2, columnspan=3, sticky="w", padx=8, pady=(10, 0))
 
         self.none_force_copy = ctk.BooleanVar(value=self.cfg.live_none_force_copy)
         ctk.CTkCheckBox(
             opts,
             text="Force copy on None baseline",
             variable=self.none_force_copy,
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0), padx=4)
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0), padx=4)
         ctk.CTkLabel(
             opts,
             text="Default off. Makes LIVE_NONE use d3d11va-copy so the no-AI baseline pays the same GPU copy as shader models.",
             text_color="#8a8a8a",
             wraplength=420,
             justify="left",
-        ).grid(row=3, column=2, columnspan=3, sticky="w", padx=8, pady=(8, 0))
+        ).grid(row=4, column=2, columnspan=3, sticky="w", padx=8, pady=(8, 0))
 
         warn = ctk.CTkLabel(
             self,
@@ -356,6 +371,7 @@ class SettingsDialog(ctk.CTkToplevel):
             crf=THESIS_CRF,
             crf_unlocked=bool(self.unlock_crf.get()),
             two_parallel_glsl=bool(self.parallel.get()),
+            bicubic_to_4k=bool(self.bicubic_4k.get()),
             animejanai_engine_note=self.master_app.cfg.animejanai_engine_note,
             live_hwdec=normalize_live_hwdec(self.live_hwdec.get()),
             live_none_force_copy=bool(self.none_force_copy.get()),
@@ -700,10 +716,21 @@ class DumpLabApp:
 
         self.overwrite = ctk.BooleanVar(value=False)
         self.dry_run = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(bar, text="Overwrite existing", variable=self.overwrite).grid(
-            row=0, column=3, padx=8
+        self.bicubic_to_4k = ctk.BooleanVar(value=self.cfg.bicubic_to_4k)
+        checks = ctk.CTkFrame(bar, fg_color="transparent")
+        checks.grid(row=0, column=3, columnspan=2, padx=8, pady=8, sticky="e")
+        ctk.CTkCheckBox(checks, text="Overwrite existing", variable=self.overwrite).pack(
+            side="left", padx=6
         )
-        ctk.CTkCheckBox(bar, text="Dry-run", variable=self.dry_run).grid(row=0, column=4, padx=8)
+        ctk.CTkCheckBox(checks, text="Dry-run", variable=self.dry_run).pack(
+            side="left", padx=6
+        )
+        ctk.CTkCheckBox(
+            checks,
+            text="Bicubic to 4K when not 4K",
+            variable=self.bicubic_to_4k,
+            command=self._on_bicubic_toggle,
+        ).pack(side="left", padx=6)
 
         self.matrix = ctk.CTkLabel(
             bar,
@@ -827,6 +854,8 @@ class DumpLabApp:
         self.cfg = cfg
         self.out_entry.delete(0, "end")
         self.out_entry.insert(0, cfg.output_dir)
+        self.bicubic_to_4k.set(bool(cfg.bicubic_to_4k))
+        self._refresh_queue_paint()
         self._refresh_tools()
         self._refresh_model_readiness()
         self._refresh_matrix()
@@ -837,7 +866,20 @@ class DumpLabApp:
 
     def _persist_output(self) -> None:
         self.cfg.output_dir = self.out_entry.get().strip() or self.cfg.output_dir
+        self.cfg.bicubic_to_4k = bool(self.bicubic_to_4k.get())
         save_config(self.cfg)
+
+    def _on_bicubic_toggle(self) -> None:
+        self.cfg.bicubic_to_4k = bool(self.bicubic_to_4k.get())
+        save_config(self.cfg)
+        self._refresh_queue_paint()
+
+    def _refresh_queue_paint(self) -> None:
+        for iid, item in self.items.items():
+            if not self.tree.exists(iid):
+                continue
+            tags = self.tree.item(iid, "tags") or ("queued",)
+            self._paint_row(iid, item, tag=tags[0] if tags else "queued")
 
     def _browse_output(self) -> None:
         path = filedialog.askdirectory(title="Output folder", initialdir=self.out_entry.get() or None)
@@ -1020,6 +1062,10 @@ class DumpLabApp:
         cls = item.height_class
         if item.force_target:
             cls = f"{item.force_target} (forced)"
+        if bool(self.bicubic_to_4k.get()) and needs_bicubic_to_4k(
+            item.target_w, item.target_h
+        ):
+            cls = f"{cls} → 4K"
         wxh = f"{item.width}x{item.height}" if item.width else "—"
         self.tree.item(
             iid,
@@ -1175,6 +1221,16 @@ class DumpLabApp:
             f"Starting {len(jobs)} dumps  ·  CRF {self.cfg.effective_crf()}  "
             f"preset {self.cfg.x265_preset}  ·  {'DRY-RUN' if dry else 'encode'}"
         )
+        if bool(self.bicubic_to_4k.get()):
+            n_up = sum(
+                1
+                for i in eligible
+                if needs_bicubic_to_4k(i.target_w, i.target_h)
+            )
+            self.log(
+                f"Bicubic to 4K: ON — {n_up}/{len(eligible)} file(s) will be "
+                "FFmpeg-scaled 2×→3840×2160 (flags=bicubic); already-4K skipped"
+            )
         self.log(job_matrix_text(eligible, models))
         self.running = True
         self.cancel_event = threading.Event()

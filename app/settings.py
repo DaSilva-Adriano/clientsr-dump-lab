@@ -68,6 +68,9 @@ class AppConfig:
     crf: int = DEFAULT_CRF
     crf_unlocked: bool = False
     two_parallel_glsl: bool = False
+    # Default off. Native model factor stays 2×. When the 2× canvas is not
+    # already 3840×2160, the FFmpeg conform step bicubic-scales to UHD.
+    bicubic_to_4k: bool = False
     animejanai_engine_note: bool = False
     # Catalog AI live only. Dumps ignore this key and always use --hwdec=no.
     # LIVE_NONE ignores it and stays d3d11va (no copy) unless live_none_force_copy.
@@ -137,6 +140,7 @@ def load_config() -> AppConfig:
         cfg.crf = DEFAULT_CRF
     cfg.crf_unlocked = bool(raw.get("crf_unlocked", False))
     cfg.two_parallel_glsl = bool(raw.get("two_parallel_glsl", False))
+    cfg.bicubic_to_4k = bool(raw.get("bicubic_to_4k", False))
     cfg.animejanai_engine_note = bool(raw.get("animejanai_engine_note", False))
     live_hwdec = _as_str(raw.get("live_hwdec"), DEFAULT_LIVE_HWDEC).strip().lower()
     cfg.live_hwdec = live_hwdec if live_hwdec in LIVE_HWDEC_CHOICES else DEFAULT_LIVE_HWDEC
