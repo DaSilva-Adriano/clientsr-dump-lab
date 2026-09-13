@@ -2,8 +2,6 @@
 
 Windows desktop app that batch-upscales videos at a **fixed 2×** using the real-time client models from a bachelor thesis comparison, then writes **MP4** files whose names encode **which model** and **which device profile** they represent.
 
-This is **not** NVIDIA RTX Video Super Resolution. Do not name the app, window, folder, or config key “VSR”.
-
 Window title: **ClientSR Dump Lab**  
 Config / temp: `%LOCALAPPDATA%\ClientSRDumpLab\`
 
@@ -50,7 +48,7 @@ Default output: `W:\dumps\` if the W: drive exists, else `%USERPROFILE%\Videos\C
 
 At startup the app probes each path and shows **Found / Missing**. Missing tools do not prevent the window from opening; only the models that need the missing tool are refused at Start.
 
-This dump host is an **NVIDIA RTX 4080 Super (16 GB)**. Laptop-class shaders (MacBook Air M4 and Surface Laptop 4) are still rendered here; both laptops play the same dumped file.
+Named machines in this README (**NVIDIA RTX 4080 Super**, **MacBook Air M4**, **Surface Laptop 4**) are **examples** of the targeted device classes, not a requirement to own those exact models. Dumps are rendered on a high-end desktop GPU host. Laptop-class shaders still run on that host; devices in the laptop class play the same dumped file.
 
 ## Scale policy (hard rule)
 
@@ -72,17 +70,17 @@ Output frame rate = source frame rate. No interpolation. The FFmpeg conform step
 
 ## Token table
 
-Device tags in filenames: **`4080`** (RTX 4080 Super only) and **`LAPTOP`** (Mac Air M4 + Surface Laptop 4 share one dump). Never emit `_SURF` or `_MAC`.
+Device tags in filenames: **`4080`** (desktop GPU class; example: RTX 4080 Super) and **`LAPTOP`** (laptop class; examples: MacBook Air M4 and Surface Laptop 4 share one dump). Never emit `_SURF` or `_MAC`.
 
 Group **A** (standard) defaults **ON**. Group **B** (anime / drawing) has a master switch default **OFF**. If Group B is enabled, Group A still runs unless you uncheck it — animation files therefore get **standard + anime** outputs.
 
-| UI label | Token (filename) | Device represented | Content | What it is | Backend |
+| UI label | Token (filename) | Device class (examples) | Content | What it is | Backend |
 |---|---|---|---|---|---|
-| FSRCNNX ×2 16 — RTX 4080 Super | `FSRCNNX16_4080` | RTX 4080 Super | Live action / general (also run on anime by default) | Best live-action shader the 4080 can run live. igv FSRCNNX_x2_16-0-4-1 | plain mpv + shader |
-| FSRCNNX ×2 56 — RTX 4080 Super | `FSRCNNX56_4080` | RTX 4080 Super | Live action / general (also run on anime by default) | Heavier igv FSRCNNX_x2_56-16-4-1. Same family as 16, larger network. 4080-only — not the laptop profile | plain mpv + shader |
-| FSRCNNX ×2 8 — laptops (Mac + Surface) | `FSRCNNX8_LAPTOP` | MacBook Air M4 + Surface Laptop 4 | Live action / general (also run on anime by default) | Best live-action shader both laptops can run live. igv FSRCNNX_x2_8-0-4-1 | plain mpv + shader |
-| Anime4K Fast Mode A — laptops (Mac + Surface) | `ANIME4KFAST_LAPTOP` | MacBook Air M4 + Surface Laptop 4 | 2D animation / line art | Best Anime4K chain both laptops can run live. v4 Fast Mode A (S/M shaders), not HQ/VL | plain mpv + shader chain |
-| AnimeJaNai Balanced — RTX 4080 Super | `ANIMEJANAI_BAL_4080` | RTX 4080 Super | 2D animation | Best anime model the 4080 can run live. 2x_AnimeJaNai HD V3 Balanced. Not a laptop profile | AnimeJaNai mpv |
+| FSRCNNX ×2 16 — RTX 4080 Super | `FSRCNNX16_4080` | Desktop GPU (e.g. RTX 4080 Super) | Live action / general (also run on anime by default) | Best live-action shader the desktop class can run live. igv FSRCNNX_x2_16-0-4-1 | plain mpv + shader |
+| FSRCNNX ×2 56 — RTX 4080 Super | `FSRCNNX56_4080` | Desktop GPU (e.g. RTX 4080 Super) | Live action / general (also run on anime by default) | Heavier igv FSRCNNX_x2_56-16-4-1. Same family as 16, larger network. Desktop-class only — not the laptop profile | plain mpv + shader |
+| FSRCNNX ×2 8 — laptops (Mac + Surface) | `FSRCNNX8_LAPTOP` | Laptop (e.g. MacBook Air M4, Surface Laptop 4) | Live action / general (also run on anime by default) | Best live-action shader the laptop class can run live. igv FSRCNNX_x2_8-0-4-1 | plain mpv + shader |
+| Anime4K Fast Mode A — laptops (Mac + Surface) | `ANIME4KFAST_LAPTOP` | Laptop (e.g. MacBook Air M4, Surface Laptop 4) | 2D animation / line art | Best Anime4K chain the laptop class can run live. v4 Fast Mode A (S/M shaders), not HQ/VL | plain mpv + shader chain |
+| AnimeJaNai Balanced — RTX 4080 Super | `ANIMEJANAI_BAL_4080` | Desktop GPU (e.g. RTX 4080 Super) | 2D animation | Best anime model the desktop class can run live. 2x_AnimeJaNai HD V3 Balanced. Not a laptop profile | AnimeJaNai mpv |
 
 Content tag **Live / Animation** is visual + summary only. It does **not** by itself enable Group B — the Group B switch does.
 
@@ -144,7 +142,7 @@ Place these files in the shaders directory (default `C:\Tools\mpv\portable_confi
 - `FSRCNNX_x2_56-16-4-1.glsl` (or `FSRCNNX_x2_56_16_4_1.glsl` on disk)
 - `FSRCNNX_x2_8-0-4-1.glsl`
 
-FSRCNNX 56 is **4080-only** (token `FSRCNNX56_4080`). It is not a Mac/Surface live preset. If that file is missing, only the 56 row is refused; 16 and 8 still run. Do not stack 56 as a 4× pass — output stays locked to 2×.
+FSRCNNX 56 is **desktop-class only** (token `FSRCNNX56_4080`). It is not a laptop live preset. If that file is missing, only the 56 row is refused; 16 and 8 still run. Do not stack 56 as a 4× pass — output stays locked to 2×.
 
 Upstream: [igv/FSRCNN-TensorFlow](https://github.com/igv/FSRCNN-TensorFlow) (the GLSL hooks commonly shipped as `FSRCNNX_x2_16-0-4-1.glsl` / `FSRCNNX_x2_56-16-4-1.glsl` / `FSRCNNX_x2_8-0-4-1.glsl`).
 
@@ -163,7 +161,7 @@ Upstream: [bloc97/Anime4K](https://github.com/bloc97/Anime4K). If a filename on 
 ## GUI notes
 
 - Queue: add files / add folder / drag-and-drop. Columns: file, WxH, fps, duration, class, content tag, status.
-- Group A has three checkboxes, default ON: FSRCNNX 16, FSRCNNX 56 (heavier than 16, RTX 4080 Super only — not the laptop profile), FSRCNNX 8.
+- Group A has three checkboxes, default ON: FSRCNNX 16, FSRCNNX 56 (heavier than 16, desktop GPU class only — not the laptop profile), FSRCNNX 8.
 - Content tag default **Live**. Setting rows to **Animation** does not enable Group B.
 - **Bilinear to 4K when not 4K** (default off): after the native 2× dump, FFmpeg bilinear-scales to 3840×2160 when the 2× canvas is smaller. 1080p→4K files are unchanged.
 - Dry-run prints the exact mpv + ffmpeg commands and writes no video.
