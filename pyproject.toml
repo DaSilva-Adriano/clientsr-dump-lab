@@ -3,6 +3,7 @@ name = "clientsr-dump-lab"
 version = "1.0.0"
 description = "Batch 2× dumps of real-time client upscalers (FSRCNNX, Anime4K, AnimeJaNai) for thesis comparison."
 readme = "README.md"
+license = { text = "GPL-3.0-or-later" }
 requires-python = ">=3.11"
 dependencies = [
     "customtkinter>=5.2.2",
