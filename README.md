@@ -28,7 +28,7 @@ pip install -r requirements.txt
 python -m app
 ```
 
-FFmpeg is **not** bundled. Use the Gyan.dev **full** build already on this machine. Do not download another FFmpeg.
+FFmpeg is **not** bundled. Install a Gyan.dev **full** build and point Settings at its `ffmpeg.exe` / `ffprobe.exe` (see path defaults below).
 
 ## Path defaults
 
@@ -237,6 +237,6 @@ clientsr-dump-lab/
 
 Copyright (C) 2026 Adriano Da Silva
 
-ClientSR Dump Lab is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+ClientSR Dump Lab is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3, or (at your option) any later version.
 
 See [LICENSE](LICENSE) for the full terms.
